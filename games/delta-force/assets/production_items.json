@@ -1,0 +1,51 @@
+{
+  "762x51mm M62": {
+    "station": "workbench",
+    "displayName": "762x51mm M62",
+    "durationSeconds": 28800,
+    "estimatedCost": null,
+    "expectedRevenue": null,
+    "currency": "哈夫币",
+    "source": "manual_with_runtime_unit_price",
+    "outputQuantity": 120,
+    "unitExpectedRevenue": null
+  },
+  "4.6x30mm": {
+    "station": "workbench",
+    "displayName": "4.6x30mm",
+    "durationSeconds": 28800,
+    "estimatedCost": null,
+    "expectedRevenue": null,
+    "currency": "哈夫币",
+    "source": "rapidocr_text_select",
+    "outputQuantity": 120,
+    "unitExpectedRevenue": null
+  },
+  "svd": {
+    "station": "tech_center",
+    "displayName": "SVD狙击步枪",
+    "durationSeconds": 57600,
+    "estimatedCost": null,
+    "expectedRevenue": null,
+    "currency": "哈夫币",
+    "source": "manual"
+  },
+  "精密护甲维修包": {
+    "station": "pharmacy_station",
+    "displayName": "精密护甲维修包",
+    "durationSeconds": 28800,
+    "estimatedCost": null,
+    "expectedRevenue": null,
+    "currency": "哈夫币",
+    "source": "manual_expected_duration"
+  },
+  "精英防弹背心": {
+    "station": "armor_bench",
+    "displayName": "精英防弹背心",
+    "durationSeconds": 28800,
+    "estimatedCost": null,
+    "expectedRevenue": 307101,
+    "currency": "哈夫币",
+    "source": "screen_observed_after_tax_price_2026-05-02"
+  }
+}

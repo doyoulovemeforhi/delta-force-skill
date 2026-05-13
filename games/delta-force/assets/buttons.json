@@ -1,0 +1,217 @@
+{
+    "762x51mm M62":  {
+                         "description":  "7.62x51mm M62 制造物品卡片",
+                         "roi":  [
+                                     0,
+                                     "height/6",
+                                     "width/3",
+                                     "height*5/6"
+                                 ],
+                         "threshold":  0.82,
+                         "scale":  0.45,
+                         "use_3_channels":  true
+                     },
+    "4.6x30mm":  {
+                     "description":  "4.6x30mm manufacturing card",
+                     "roi":  [
+                                 0,
+                                 "height/6",
+                                 "width/3",
+                                 "height*5/6"
+                             ],
+                     "threshold":  0.82,
+                     "scale":  0.25,
+                     "use_3_channels":  true
+                 },
+    "svd":  {
+                "description":  "技术中心 SVD 生产图纸卡片",
+                "roi":  [
+                            0,
+                            "height/6",
+                            "width/3",
+                            "height*5/6"
+                        ],
+                "threshold":  0.8,
+                "scale":  1.0,
+                "use_3_channels":  true
+            },
+    "精英防弹背心":  {
+                   "description":  "精英防弹背心制造物品卡片",
+                   "roi":  [
+                               0,
+                               "height/6",
+                               "width/3",
+                               "height*5/6"
+                           ],
+                   "threshold":  0.9,
+                   "scale":  0.55,
+                   "use_3_channels":  true
+               },
+    "精密护甲维修包":  {
+                    "description":  "制药台精密护甲维修包生产图纸卡片",
+                    "roi":  [
+                                0,
+                                "height/6",
+                                "width/3",
+                                "height*5/6"
+                            ],
+                    "threshold":  0.8,
+                    "scale":  1.0,
+                    "use_3_channels":  true
+                },
+    "teqinchu":  {
+                     "description":  "顶部导航栏特勤处文字",
+                     "roi":  [
+                                 "width/3",
+                                 0,
+                                 "width/5",
+                                 "height/10"
+                             ],
+                     "threshold":  0.9,
+                     "scale":  1.0,
+                     "use_3_channels":  false
+                 },
+    "trading_house_text":  {
+                               "description":  "Trading House text only",
+                               "roi":  [
+                                           "width/4",
+                                           0,
+                                           "width/4",
+                                           "height/10"
+                                       ],
+                               "threshold":  0.88,
+                               "scale":  1.0,
+                               "use_3_channels":  false
+                           },
+    "trading_house":  {
+                          "description":  "Top navigation active Trading House tab",
+                          "roi":  [
+                                      "width/4",
+                                      0,
+                                      "width/4",
+                                      "height/10"
+                                  ],
+                          "threshold":  0.86,
+                          "scale":  1.0,
+                          "use_3_channels":  true
+                      },
+    "workbench":  {
+                      "description":  "工作台入口",
+                      "roi":  [
+                                  "width/5",
+                                  "height/5",
+                                  "width/4",
+                                  "height/6"
+                              ],
+                      "threshold":  0.9,
+                      "scale":  1.0,
+                      "use_3_channels":  false
+                  },
+    "armor_bench":  {
+                        "description":  "防具台入口",
+                        "roi":  [
+                                    "width/5",
+                                    "height/2",
+                                    "width/4",
+                                    "height/5"
+                                ],
+                        "threshold":  0.9,
+                        "scale":  1.0,
+                        "use_3_channels":  false
+                    },
+    "tech_center":  {
+                        "description":  "技术中心入口",
+                        "roi":  [
+                                    0,
+                                    "height/5",
+                                    "width/4",
+                                    "height/6"
+                                ],
+                        "threshold":  0.9,
+                        "scale":  1.0,
+                        "use_3_channels":  false
+                    },
+    "pharmacy_station":  {
+                             "description":  "制药台入口",
+                             "roi":  [
+                                         0,
+                                         "height/2",
+                                         "width/4",
+                                         "height/5"
+                                     ],
+                             "threshold":  0.9,
+                             "scale":  1.0,
+                             "use_3_channels":  false
+                         },
+    "idle_slot":  {
+                      "description":  "生产槽空闲中状态，用于判断收取成功",
+                      "roi":  [
+                                  0,
+                                  "height/4",
+                                  "width/2",
+                                  "height/2"
+                              ],
+                      "threshold":  0.75,
+                      "scale":  1.0,
+                      "use_3_channels":  false
+                  },
+    "production_in_progress":  {
+                                   "description":  "生产中状态",
+                                   "roi":  [
+                                               0,
+                                               "height/3",
+                                               "width/2",
+                                               "height/3"
+                                           ],
+                                   "threshold":  0.8,
+                                   "use_3_channels":  false
+                               },
+    "one_click_fill":  {
+                           "description":  "一键补齐按钮",
+                           "roi":  [
+                                       "width*2/3",
+                                       "height*3/4",
+                                       "width/3",
+                                       "height/4"
+                                   ],
+                           "threshold":  0.85,
+                           "scale":  1.0,
+                           "use_3_channels":  true
+                       },
+    "produce_button":  {
+                           "description":  "生产按钮",
+                           "roi":  [
+                                       "width*2/3",
+                                       "height*3/4",
+                                       "width/3",
+                                       "height/4"
+                                   ],
+                           "threshold":  0.85,
+                           "scale":  1.0,
+                           "use_3_channels":  true
+                       },
+    "collect_button":  {
+                           "description":  "收获按钮",
+                           "roi":  [
+                                       "width*2/3",
+                                       "height*3/4",
+                                       "width/3",
+                                       "height/4"
+                                   ],
+                           "threshold":  0.85,
+                           "scale":  1.0,
+                           "use_3_channels":  true
+                       },
+    "forced_offline_exit":  {
+                                "description":  "账号被另一设备挤下线后的退出游戏按钮",
+                                "roi":  [
+                                            "width/3",
+                                            "height/2",
+                                            "width/3",
+                                            "height/4"
+                                        ],
+                                "threshold":  0.88,
+                                "scale":  1.0,
+                                "use_3_channels":  true
+                            }
+}

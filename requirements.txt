@@ -1,0 +1,9 @@
+pywin32>=306
+Pillow>=10.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+openai>=1.0.0
+psutil>=5.9.0
+python-dotenv>=1.0.0
+rapidocr>=3.8.1
+onnxruntime-directml>=1.24.4
