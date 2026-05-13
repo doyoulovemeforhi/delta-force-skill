@@ -191,6 +191,17 @@ def handle_buy_market_item(args):
     print_json(delta_force.buy_market_item_quantity(args.item_name, args.quantity, background=args.background))
 
 
+def handle_redeem_department_item(args):
+    print_json(
+        delta_force.redeem_department_item(
+            args.department_name,
+            args.item_name,
+            times=args.times,
+            background=args.background,
+        )
+    )
+
+
 def handle_collect(args):
     print_json(delta_force.collect_completed_stations(background=args.background))
 
@@ -376,6 +387,12 @@ def build_parser() -> argparse.ArgumentParser:
     buy_market_item_parser.add_argument("quantity", type=int)
     buy_market_item_parser.add_argument("--background", action="store_true")
 
+    redeem_department_item_parser = subparsers.add_parser("redeem_department_item")
+    redeem_department_item_parser.add_argument("department_name")
+    redeem_department_item_parser.add_argument("item_name")
+    redeem_department_item_parser.add_argument("times", type=int)
+    redeem_department_item_parser.add_argument("--background", action="store_true")
+
     collect_parser = subparsers.add_parser("collect")
     collect_parser.add_argument("--background", action="store_true")
 
@@ -450,6 +467,7 @@ def main() -> None:
         "read_market_detail": handle_read_market_detail,
         "set_market_quantity": handle_set_market_quantity,
         "buy_market_item": handle_buy_market_item,
+        "redeem_department_item": handle_redeem_department_item,
         "collect": handle_collect,
         "key": handle_key,
         "hold": handle_hold,

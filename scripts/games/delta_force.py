@@ -2492,6 +2492,127 @@ def click_market_item_by_name(target_name: str, background: bool = False) -> Dic
     )
 
 
+def redeem_department_item(
+    department_name: str,
+    item_name: str,
+    times: int = 1,
+    background: bool = False,
+) -> Dict:
+    if times <= 0:
+        return _result(
+            "redeem_department_item",
+            success=False,
+            departmentName=department_name,
+            itemName=item_name,
+            requestedTimes=times,
+            reason="invalid_times",
+        )
+
+    navigation = []
+    quartermaster = detect_text_by_ocr("军需处")
+    if quartermaster.get("found"):
+        action = click_text_by_ocr("军需处", background=background)
+        navigation.append(action)
+        if not action.get("clicked"):
+            return _result(
+                "redeem_department_item",
+                success=False,
+                departmentName=department_name,
+                itemName=item_name,
+                requestedTimes=times,
+                completedTimes=0,
+                reason="navigation_failed",
+                failedLabel="军需处",
+                navigation=navigation,
+            )
+        time.sleep(0.8)
+
+    for label in (department_name, item_name):
+        action = click_text_by_ocr(label, background=background)
+        navigation.append(action)
+        if not action.get("clicked"):
+            return _result(
+                "redeem_department_item",
+                success=False,
+                departmentName=department_name,
+                itemName=item_name,
+                requestedTimes=times,
+                completedTimes=0,
+                reason="navigation_failed",
+                failedLabel=label,
+                navigation=navigation,
+            )
+        time.sleep(0.8)
+
+    rounds = []
+    completed_times = 0
+    for round_index in range(1, times + 1):
+        sold_out = detect_text_by_ocr("已售")
+        if sold_out.get("found"):
+            rounds.append(
+                {
+                    "round": round_index,
+                    "success": False,
+                    "reason": "sold_out",
+                    "soldOut": sold_out,
+                }
+            )
+            break
+
+        round_result = {"round": round_index}
+        fill = detect_text_by_ocr("一键补齐")
+        round_result["fillAvailable"] = fill
+        if fill.get("found"):
+            fill_click = click_text_by_ocr("一键补齐", background=background)
+            round_result["fillClick"] = fill_click
+            if not fill_click.get("clicked"):
+                round_result.update(success=False, reason="fill_click_failed")
+                rounds.append(round_result)
+                break
+            time.sleep(0.8)
+
+            fill_confirm = click_fill_confirm(background=background)
+            round_result["fillConfirm"] = fill_confirm
+            if not fill_confirm.get("clicked"):
+                round_result.update(success=False, reason="fill_confirm_not_found")
+                rounds.append(round_result)
+                break
+            time.sleep(0.8)
+
+        exchange_click = click_text_by_ocr("兑换", background=background)
+        round_result["exchangeClick"] = exchange_click
+        if not exchange_click.get("clicked"):
+            round_result.update(success=False, reason="exchange_button_not_found")
+            rounds.append(round_result)
+            break
+        time.sleep(0.8)
+
+        confirm_click = click_text_by_ocr("确认", background=background)
+        round_result["confirmClick"] = confirm_click
+        if not confirm_click.get("clicked"):
+            round_result.update(success=False, reason="exchange_confirm_not_found")
+            rounds.append(round_result)
+            break
+
+        completed_times += 1
+        round_result.update(success=True)
+        rounds.append(round_result)
+        time.sleep(1.0)
+
+    final_path = take_screenshot(WINDOW_TITLE)
+    return _result(
+        "redeem_department_item",
+        success=completed_times == times,
+        departmentName=department_name,
+        itemName=item_name,
+        requestedTimes=times,
+        completedTimes=completed_times,
+        navigation=navigation,
+        rounds=rounds,
+        screenshotPath=final_path,
+    )
+
+
 def click_item_by_ocr_text(item_name: str, background: bool = False) -> Dict:
     path = take_screenshot(WINDOW_TITLE)
     image = _load_screenshot(path)
