@@ -1,5 +1,15 @@
 # Delta Force Skill Minimal
 
+> 注意：利润最优模式暂时不要使用。该模式依赖远程利润接口，目前远程接口不可用；请使用固定物品制造模式。
+
+## 免责声明
+
+本项目及其自动化能力仅用于个人场景下减少重复性游戏负担：希望让使用者在游戏时间之外更专注生活、工作和学习，在游戏时间之内降低重复操作成本、提升正常游戏体验。
+
+本项目不支持、不鼓励、也不应被用于影响游戏经济平衡、破坏公平性、批量牟利、规避游戏规则或对其他玩家体验产生负面影响的操作。使用者应自行遵守游戏服务条款、社区规则和所在地区的相关规定，并自行承担使用自动化工具带来的账号、数据和合规风险。
+
+如果你发现本项目中的能力可能被误用，欢迎通过 issue 提出收敛建议、风险提示或安全边界优化。
+
 用于《三角洲行动》基地内特勤处、交易行、部门兑换和统计页面的本地自动化工具。
 
 当前设计原则：
@@ -110,6 +120,8 @@ python main.py produce_station_items "tech_center=svd" "workbench=4.6x30mm" "pha
 
 利润最优制造：
 
+> 暂时不要使用以下利润最优命令：该模式依赖远程利润接口，目前该接口不可用。请改用固定物品制造模式。
+
 ```powershell
 python main.py plan_swat_products --metric hourlyProfit
 python main.py produce_swat_products --metric hourlyProfit
@@ -150,6 +162,8 @@ http://127.0.0.1:8765/
 ```
 
 利润最优模式：
+
+> 暂时不要使用以下利润最优循环模式：该模式依赖远程利润接口，目前该接口不可用。请改用 `-ProductionMode fixed`。
 
 ```powershell
 .\watch_collect_produce_dynamic.ps1 -ProductionMode profit
@@ -208,6 +222,8 @@ produce_station_item
 ## 利润数据
 
 远端利润接口配置：
+
+> 当前远端利润接口不可用，利润最优模式暂时不要使用。本节仅保留历史配置说明。
 
 ```powershell
 python main.py config --swat-cookie "..." --swat-version "..." --swat-swimlane "..."

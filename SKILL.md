@@ -6,6 +6,14 @@ version: 0.3.0
 
 # Delta Force Skill
 
+> 注意：利润最优模式暂时不要使用。该模式依赖远程利润接口，目前远程接口不可用；请使用固定物品制造模式。
+
+## 模型能力建议
+
+推荐使用具备多模态感知能力的模型运行或协作维护本 skill，例如 GPT-5.4、Claude 等。多模态模型可以直接理解截图、按钮状态、弹窗和页面布局，适合处理游戏 UI 状态机这类需要视觉判断的自动化任务。
+
+如果使用不具备多模态感知能力的 LLM，也可以运行本项目，但主要只能依赖 OCR、模板匹配和日志输出来感知页面状态，体验和排障效率会差一些。欢迎提出 issue，尤其是针对无多模态能力 LLM 的脚本优化建议，例如更稳定的 OCR 输出结构、更清晰的状态报告、更少依赖截图语义理解的流程设计。
+
 ## 目标
 
 这个 skill 用于《三角洲行动》基地内自动化，重点覆盖：
@@ -62,6 +70,8 @@ python main.py produce_station_items "tech_center=svd" "workbench=4.6x30mm" "pha
 ```
 
 利润最优制造：
+
+> 暂时不要使用以下利润最优命令：该模式依赖远程利润接口，目前该接口不可用。请改用固定物品制造模式。
 
 ```powershell
 python main.py plan_swat_products --metric hourlyProfit
@@ -184,6 +194,8 @@ python main.py produce_swat_products --metric hourlyProfit
 ```
 
 利润模式：
+
+> 暂时不要使用以下利润最优循环模式：该模式依赖远程利润接口，目前该接口不可用。请改用 `-ProductionMode fixed`。
 
 ```powershell
 .\watch_collect_produce_dynamic.ps1 -ProductionMode profit
