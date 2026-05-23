@@ -1,69 +1,238 @@
 # Delta Force Skill Minimal
 
-一个用于“三角洲行动”基地/特勤处物品制造流程的最小 skill 骨架。
+用于《三角洲行动》基地内特勤处、交易行、部门兑换和统计页面的本地自动化工具。
 
-它遵循“截图 -> 识别 -> 点击 -> 再截图”的闭环：
+当前设计原则：
+- 固定入口、固定按钮优先使用模板匹配。
+- 动态文本、倒计时、价格、物品名称优先使用 OCR。
+- 生产物品选择已经改为 OCR 路径，并支持在左侧物品列表中滚动查找。
+- 制造策略和游戏执行解耦：策略层决定“造什么”，游戏执行层决定“怎么造”。
 
-- 固定按钮优先使用 OpenCV 模板识别。
-- 目标物品名称、动态 UI 或模板缺失时，使用 GUI-Plus 多模态模型兜底。
-- 每个关键动作之后都会再次截图并返回 JSON。
+## 安装依赖
 
-## 安装
+推荐使用仓库自带安装脚本：
 
-```bash
-cd E:\下载\delta-force-skill-minimal
-pip install -r requirements.txt
+```powershell
+cd D:\delta-force-skill-minimal
+.\install_dependencies.ps1
 ```
 
-如果要使用 `click_text`、`craft` 的物品名称定位能力，需要配置 API Key：
+这个脚本会：
+- 使用当前系统 Python 安装依赖。
+- 安装 `requirements.txt` 中的 GUI、OCR、图像识别、统计和 API 依赖。
+- 安装完成后验证关键模块能否导入。
 
-```bash
-python main.py config --set-api-key YOUR_DASHSCOPE_API_KEY
+如果希望隔离环境，可以创建 `.venv`：
+
+```powershell
+.\install_dependencies.ps1 -UseVenv
+.\.venv\Scripts\Activate.ps1
 ```
 
-或者设置环境变量：
+只检查依赖是否可用，不执行安装：
 
-```bash
-set DASHSCOPE_API_KEY=YOUR_DASHSCOPE_API_KEY
+```powershell
+.\install_dependencies.ps1 -VerifyOnly
 ```
 
-## 命令
+依赖来源：
 
-```bash
+```text
+requirements.txt
+```
+
+主要依赖包括：
+- `pywin32`：Windows 窗口、截图、鼠标键盘操作。
+- `Pillow`、`opencv-python`、`numpy`：截图处理和模板匹配。
+- `rapidocr`、`onnxruntime-directml`：本地 OCR。
+- `openai`、`python-dotenv`：可选的外部模型/API 配置。
+- `psutil`：进程检测。
+
+`cc-connect.cmd` 属于外部通信环境，不由本仓库安装脚本安装。
+
+## 脚本清单
+
+当前仓库根目录下的脚本：
+
+```text
+install_dependencies.ps1
+watch_collect_produce_dynamic.ps1
+main.py
+```
+
+用途说明：
+- `install_dependencies.ps1`：安装并验证 Python 依赖。
+- `watch_collect_produce_dynamic.ps1`：动态循环执行特勤处收取和制造，根据下一次预计完成时间安排下轮执行。
+- `main.py`：所有自动化能力的 CLI 入口，包含截图、识别、收取、制造、购买、兑换、统计页面等命令。
+
+## 常用命令
+
+登录、启动和进入大厅：
+
+```powershell
+# 一键流程：未登录时发送二维码，扫码后启动游戏，并在识别到 Tab 开始游戏时进入大厅
+python main.py login_launch_and_enter_game --login-channel qq
+python main.py login_launch_and_enter_game --login-channel wechat
+
+# 分段流程：只发送/刷新登录二维码
+python main.py refresh_qr_send --login-channel qq --message "WeGame QQ扫码登录二维码"
+python main.py refresh_qr_send --login-channel wechat --message "WeGame 微信二维码"
+
+# 分段流程：已登录 WeGame 后启动三角洲并进入大厅
+python main.py launch_and_enter_game
+
+# 仅处理游戏内 Tab 开始游戏提示
+python main.py enter_game_by_tab_prompt
+```
+
+说明：
+- QQ/微信登录页切换使用 WeGame 登录窗口的归一化坐标。
+- 二维码失效时优先匹配二维码中心旋转箭头模板；二维码有效时只截图发送。
+- 进入游戏时会先 OCR 识别 `Tab` 和 `开始游戏`，再激活游戏窗口、点击中心拿焦点、发送 `Tab`。
+
+基础状态：
+
+```powershell
 python main.py windows
 python main.py screenshot
 python main.py buttons
-python main.py produce_762x51mm_m62 --dry-run
-python main.py produce_762x51mm_m62
-python main.py produce_station_item workbench "762x51mm M62" --dry-run
-python main.py produce_station_items "tech_center=物品模板名" "workbench=762x51mm M62" "pharmacy_station=物品模板名" "armor_bench=物品模板名" --dry-run
-python main.py collect
+python main.py status
+python main.py next_action
+python main.py collect_completed
 ```
 
-## 补模板的方法
+特勤处固定物品制造：
 
-1. 打开三角洲行动并停在目标 UI。
-2. 运行 `python main.py screenshot`。
-3. 从 `screenshots/三角洲行动/` 里裁剪按钮小图。
-4. 把按钮图保存到 `games/delta-force/assets/buttons/`。
-5. 文件名要和 `buttons.json` 中的 key 一致，例如 `produce_button.png`。
-6. 根据按钮大致位置调整 `buttons.json` 的 `roi` 和 `threshold`。
+```powershell
+python main.py produce_station_item workbench "4.6x30mm" --dry-run
+python main.py produce_station_items "tech_center=svd" "workbench=4.6x30mm" "pharmacy_station=精密护甲维修包" "armor_bench=精英防弹背心"
+```
 
-## 当前占位按钮
+利润最优制造：
 
-- `base_logistics`: 基地特勤处/后勤入口。
-- `manufacture_tab`: 制造/生产页面入口。
-- `back_button`: 返回按钮。
-- `material_insufficient`: 材料不足状态。
-- `production_in_progress`: 生产中状态。
+```powershell
+python main.py plan_swat_products --metric hourlyProfit
+python main.py produce_swat_products --metric hourlyProfit
+python main.py produce_swat_products --metric profit
+```
 
-## 推荐迭代顺序
+交易行购买：
 
-1. 先跑通 `produce_762x51mm_m62` 的固定制造流程。
-2. 给高频按钮补模板：`workbench`、`idle_slot`、`one_click_fill`、`produce_button`。
-3. 给异常状态补模板：`material_insufficient`、`production_in_progress`。
-4. 再把流程拆成更精确的状态机。
+```powershell
+python main.py buy_market_item "7.62x51 M80" 400
+```
 
-## 注意
+部门兑换：
 
-这个骨架定位为操作辅助，不建议做无人值守循环。涉及材料消耗的确认动作前，建议保留截图校验或人工确认。
+```powershell
+python main.py redeem_department_item "医疗部门" "户外医疗箱" 3
+```
+
+统计页面：
+
+```powershell
+python main.py analytics_server --host 127.0.0.1 --port 8765
+python main.py analytics_summary --limit 20
+```
+
+统计页面地址：
+
+```text
+http://127.0.0.1:8765/
+```
+
+## 动态循环脚本
+
+固定物品模式：
+
+```powershell
+.\watch_collect_produce_dynamic.ps1 -ProductionMode fixed
+```
+
+利润最优模式：
+
+```powershell
+.\watch_collect_produce_dynamic.ps1 -ProductionMode profit
+.\watch_collect_produce_dynamic.ps1 -ProductionMode profit -SwatMetric hourlyProfit
+.\watch_collect_produce_dynamic.ps1 -ProductionMode profit -SwatMetric profit
+```
+
+固定模式自定义物品：
+
+```powershell
+.\watch_collect_produce_dynamic.ps1 -ProductionMode fixed -FixedSpecs "tech_center=svd","workbench=4.6x30mm","pharmacy_station=精密护甲维修包","armor_bench=精英防弹背心"
+```
+
+## 生产物品选择
+
+当前生产物品选择链路：
+
+```text
+produce_station_item
+  -> 点击空闲槽位
+  -> click_item_by_ocr_text(item_name)
+     -> OCR 当前列表
+     -> 找不到则在物品列表区域内滚动
+     -> 重新 OCR
+     -> 到底或超过最大滚动次数才失败
+```
+
+说明：
+- 生产物品名称不再先走模板匹配。
+- 固定按钮、入口、确认按钮仍保留模板匹配。
+- 生产物品列表滚动区域使用相对坐标，会按当前游戏窗口尺寸缩放。
+
+当前确认可用的 4K 基准区域：
+
+```text
+区域：(270,815) 到 (770,1405)
+滚动点：(520,1140)
+```
+
+## 分辨率适配
+
+目标支持 16:9 游戏窗口：
+
+```text
+1920x1080
+2560x1440
+3840x2160
+```
+
+实现方式：
+- 模板以 4K 截图为基准，识别时按窗口宽度自动缩放。
+- 模板匹配会尝试临近尺度，降低 DPI 或截图缩放误差带来的影响。
+- ROI、交易行滑条、购买按钮、生产物品列表滚动区域使用相对坐标。
+- 黄色完成态、空闲态、倒计时 OCR 的局部检测阈值按窗口面积或高度缩放。
+
+## 利润数据
+
+远端利润接口配置：
+
+```powershell
+python main.py config --swat-cookie "..." --swat-version "..." --swat-swimlane "..."
+```
+
+`4.6x30mm` 当前本地配置已对齐远端利润接口：
+
+```text
+unitExpectedRevenue = 3997
+outputQuantity = 150
+expectedRevenue = 599550
+```
+
+运行时如果 OCR 读出的单价明显低于本地可信值，会忽略该异常读数，避免把收益写成错误的小值。
+
+## 模板与 OCR 边界
+
+仍然建议使用模板匹配的场景：
+- 特勤处入口。
+- 空闲槽位。
+- 固定按钮。
+- 退出、确认类按钮。
+
+优先使用 OCR 的场景：
+- 生产物品名称。
+- 动态数字。
+- 会滚动的列表。
+- 价格、倒计时、库存等动态文本。

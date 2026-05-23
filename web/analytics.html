@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Delta Force Analytics</title>
+  <style>
+    :root {
+      --bg: #eef2ed;
+      --panel: rgba(255, 255, 252, 0.88);
+      --panel-strong: rgba(255, 255, 252, 0.96);
+      --text: #18211d;
+      --muted: #5f6a63;
+      --line: rgba(24, 33, 29, 0.12);
+      --accent: #0f7a5b;
+      --accent-soft: rgba(15, 122, 91, 0.1);
+      --shadow: 0 16px 36px rgba(31, 42, 35, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background:
+        linear-gradient(135deg, rgba(15, 122, 91, 0.12), transparent 34%),
+        linear-gradient(225deg, rgba(176, 98, 45, 0.12), transparent 32%),
+        var(--bg);
+      min-height: 100vh;
+    }
+
+    .shell {
+      width: min(1560px, calc(100vw - 28px));
+      margin: 14px auto 32px;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(320px, 0.58fr) minmax(640px, 1fr);
+      gap: 12px;
+      align-items: start;
+      margin-bottom: 12px;
+    }
+
+    .title-panel, .filter-panel, .panel, .metric {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .title-panel {
+      padding: 16px 18px;
+      min-height: 112px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 26px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .subtitle, .status, .muted {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .filter-panel {
+      padding: 12px;
+      min-width: 0;
+    }
+
+    .filters {
+      display: grid;
+      grid-template-columns: 140px 140px 120px minmax(180px, 1fr) 72px;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .compact-filters {
+      display: grid;
+      grid-template-columns: 116px 64px;
+      gap: 8px;
+      align-items: end;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    input, select, button {
+      height: 36px;
+      border-radius: 8px;
+      font: inherit;
+    }
+
+    input, select {
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      color: var(--text);
+      padding: 0 10px;
+      min-width: 0;
+    }
+
+    button {
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      padding: 0 14px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .metric-strip {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .metric {
+      padding: 12px 14px;
+      min-height: 86px;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .metric-value {
+      margin-top: 8px;
+      font-size: 25px;
+      font-weight: 850;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 0.82fr 1.18fr;
+      gap: 12px;
+    }
+
+    .panel {
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .section-title {
+      margin: 0;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    .full {
+      margin-top: 12px;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+      min-width: 620px;
+    }
+
+    th, td {
+      padding: 8px 9px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .pill {
+      display: inline-block;
+      min-width: 44px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      text-align: center;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .event-title {
+      font-weight: 800;
+    }
+
+    .event-meta {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: normal;
+    }
+
+    .event-table {
+      min-width: 920px;
+    }
+
+    .event-table th:nth-child(1),
+    .event-table td:nth-child(1) {
+      width: 170px;
+    }
+
+    .event-table th:nth-child(2),
+    .event-table td:nth-child(2) {
+      width: 42%;
+      white-space: normal;
+    }
+
+    .event-table th:nth-child(3),
+    .event-table td:nth-child(3),
+    .event-table th:nth-child(4),
+    .event-table td:nth-child(4),
+    .event-table th:nth-child(5),
+    .event-table td:nth-child(5),
+    .event-table th:nth-child(6),
+    .event-table td:nth-child(6) {
+      text-align: right;
+    }
+
+    .metric:nth-child(3),
+    .metric:nth-child(4),
+    .metric:nth-child(5) {
+      background: linear-gradient(180deg, var(--panel-strong), rgba(236, 246, 240, 0.9));
+    }
+
+    .empty {
+      color: var(--muted);
+      padding: 18px 8px;
+    }
+
+    @media (max-width: 1100px) {
+      .topbar, .grid { grid-template-columns: 1fr; }
+      .filter-panel { min-width: 0; }
+      .metric-strip { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 760px) {
+      .filters { grid-template-columns: 1fr; }
+      .metric-strip { grid-template-columns: 1fr; }
+      .shell { width: min(100vw - 18px, 1480px); }
+      h1 { font-size: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="topbar">
+      <div class="title-panel">
+        <h1>三角洲行动数据台</h1>
+        <div class="subtitle">查看制造、兑换、购买、收取的成本、数量、预期收益和利润。数据来自本地 SQLite。</div>
+        <div id="status" class="status">加载中</div>
+      </div>
+      <div class="filter-panel">
+        <div class="filters">
+          <label>开始时间
+            <input id="start-date" type="date">
+          </label>
+          <label>结束时间
+            <input id="end-date" type="date">
+          </label>
+          <label>类型
+            <select id="type-filter">
+              <option value="">全部</option>
+              <option value="buy">购买</option>
+              <option value="produce">制造</option>
+              <option value="redeem">兑换</option>
+              <option value="collect">收取</option>
+            </select>
+          </label>
+          <label>物品名称
+            <input id="name-filter" type="search" placeholder="模糊匹配">
+          </label>
+          <button id="reset-filters" type="button">重置</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="metric-strip">
+      <div class="metric">
+        <div class="metric-label">事件数</div>
+        <div id="metric-events" class="metric-value">0</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">总数量</div>
+        <div id="metric-quantity" class="metric-value">0</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">购买成本</div>
+        <div id="metric-buy" class="metric-value">0</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">兑换成本</div>
+        <div id="metric-redeem" class="metric-value">0</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">预期利润</div>
+        <div id="metric-profit" class="metric-value">0</div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <div class="section-head">
+          <h2 class="section-title">按类型汇总</h2>
+          <div id="type-count" class="muted">0 类</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>类型</th>
+                <th>次数</th>
+                <th>数量</th>
+                <th>成本</th>
+                <th>预期收益</th>
+                <th>预期利润</th>
+              </tr>
+            </thead>
+            <tbody id="type-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <h2 class="section-title">按物品汇总</h2>
+          <div id="item-count" class="muted">0 项</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>类型</th>
+                <th>名称</th>
+                <th>次数</th>
+                <th>数量</th>
+                <th>成本</th>
+                <th>利润</th>
+              </tr>
+            </thead>
+            <tbody id="item-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel full">
+      <div class="section-head">
+        <h2 class="section-title">最近事件</h2>
+        <div class="compact-filters">
+          <label>加载条数
+            <input id="limit" type="number" min="1" max="1000" value="200">
+          </label>
+          <button id="reload" type="button">刷新</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="event-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>事件</th>
+              <th>数量</th>
+              <th>成本</th>
+              <th>预期收益</th>
+              <th>预期利润</th>
+            </tr>
+          </thead>
+          <tbody id="event-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    let dashboardData = null;
+
+    const typeLabels = {
+      produce: "制造",
+      buy: "购买",
+      redeem: "兑换",
+      collect: "收取"
+    };
+
+    const formatNumber = (value) => {
+      const num = Number(value || 0);
+      return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(num);
+    };
+
+    const safeText = (value) => value == null || value === "" ? "-" : String(value);
+
+    const eventSubject = (row) => row.item_name || row.station_name || row.department_name || "";
+
+    const parseDateOnly = (value, endOfDay = false) => {
+      if (!value) return null;
+      const date = new Date(`${value}T${endOfDay ? "23:59:59" : "00:00:00"}`);
+      return Number.isNaN(date.getTime()) ? null : date;
+    };
+
+    const eventTime = (row) => {
+      const date = new Date(row.occurred_at);
+      return Number.isNaN(date.getTime()) ? null : date;
+    };
+
+    function currentFilters() {
+      return {
+        start: parseDateOnly(document.getElementById("start-date").value),
+        end: parseDateOnly(document.getElementById("end-date").value, true),
+        type: document.getElementById("type-filter").value,
+        name: document.getElementById("name-filter").value.trim().toLowerCase()
+      };
+    }
+
+    function filteredEvents() {
+      const filters = currentFilters();
+      return (dashboardData?.recentEvents || []).filter((row) => {
+        const time = eventTime(row);
+        if (filters.start && time && time < filters.start) return false;
+        if (filters.end && time && time > filters.end) return false;
+        if (filters.type && row.event_type !== filters.type) return false;
+        if (filters.name) {
+          const haystack = [
+            eventSubject(row),
+            row.event_type,
+            typeLabels[row.event_type] || "",
+            row.station_name || "",
+            row.department_name || ""
+          ].join(" ").toLowerCase();
+          if (!haystack.includes(filters.name)) return false;
+        }
+        return true;
+      });
+    }
+
+    function summarizeByType(events) {
+      const map = new Map();
+      for (const row of events) {
+        const key = row.event_type || "unknown";
+        const item = map.get(key) || { event_type: key, count: 0, quantity: 0, total_cost: 0, expected_revenue: 0, expected_profit: 0 };
+        item.count += 1;
+        item.quantity += Number(row.quantity || 0);
+        item.total_cost += Number(row.total_cost || 0);
+        item.expected_revenue += Number(row.expected_revenue || 0);
+        item.expected_profit += Number(row.expected_profit || 0);
+        map.set(key, item);
+      }
+      return [...map.values()].sort((a, b) => a.event_type.localeCompare(b.event_type));
+    }
+
+    function summarizeByItem(events) {
+      const map = new Map();
+      for (const row of events) {
+        const subject = eventSubject(row) || "(unknown)";
+        const key = `${row.event_type || "unknown"}::${subject}`;
+        const item = map.get(key) || { event_type: row.event_type || "unknown", subject_name: subject, count: 0, quantity: 0, total_cost: 0, expected_profit: 0 };
+        item.count += 1;
+        item.quantity += Number(row.quantity || 0);
+        item.total_cost += Number(row.total_cost || 0);
+        item.expected_profit += Number(row.expected_profit || 0);
+        map.set(key, item);
+      }
+      return [...map.values()].sort((a, b) => b.count - a.count || b.quantity - a.quantity || a.subject_name.localeCompare(b.subject_name));
+    }
+
+    function render() {
+      if (!dashboardData) return;
+      const events = filteredEvents();
+      const byType = summarizeByType(events);
+      const byItem = summarizeByItem(events);
+      const totals = events.reduce((acc, row) => {
+        acc.events += 1;
+        acc.quantity += Number(row.quantity || 0);
+        if (row.event_type === "buy") acc.buy += Number(row.total_cost || 0);
+        if (row.event_type === "redeem") acc.redeem += Number(row.total_cost || 0);
+        acc.profit += Number(row.expected_profit || 0);
+        return acc;
+      }, { events: 0, quantity: 0, buy: 0, redeem: 0, profit: 0 });
+
+      document.getElementById("metric-events").textContent = formatNumber(totals.events);
+      document.getElementById("metric-quantity").textContent = formatNumber(totals.quantity);
+      document.getElementById("metric-buy").textContent = formatNumber(totals.buy);
+      document.getElementById("metric-redeem").textContent = formatNumber(totals.redeem);
+      document.getElementById("metric-profit").textContent = formatNumber(totals.profit);
+      document.getElementById("type-count").textContent = `${byType.length} 类`;
+      document.getElementById("item-count").textContent = `${byItem.length} 项`;
+      document.getElementById("status").textContent = `数据库：${dashboardData.databasePath}；当前筛选 ${events.length} / ${(dashboardData.recentEvents || []).length} 条事件`;
+
+      document.getElementById("type-body").innerHTML = byType.length ? byType.map((row) => `
+        <tr>
+          <td><span class="pill">${safeText(typeLabels[row.event_type] || row.event_type)}</span></td>
+          <td>${formatNumber(row.count)}</td>
+          <td>${formatNumber(row.quantity)}</td>
+          <td>${formatNumber(row.total_cost)}</td>
+          <td>${formatNumber(row.expected_revenue)}</td>
+          <td>${formatNumber(row.expected_profit)}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="6" class="empty">没有匹配数据</td></tr>`;
+
+      document.getElementById("item-body").innerHTML = byItem.length ? byItem.map((row) => `
+        <tr>
+          <td>${safeText(typeLabels[row.event_type] || row.event_type)}</td>
+          <td>${safeText(row.subject_name)}</td>
+          <td>${formatNumber(row.count)}</td>
+          <td>${formatNumber(row.quantity)}</td>
+          <td>${formatNumber(row.total_cost)}</td>
+          <td>${formatNumber(row.expected_profit)}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="6" class="empty">没有匹配数据</td></tr>`;
+
+      document.getElementById("event-body").innerHTML = events.length ? events.map((row) => {
+        const title = eventSubject(row) || "-";
+        const meta = [
+          typeLabels[row.event_type] || row.event_type,
+          row.station_name ? `工作台 ${row.station_name}` : null,
+          row.department_name ? `部门 ${row.department_name}` : null
+        ].filter(Boolean).join(" · ");
+        return `
+          <tr>
+            <td>${safeText(row.occurred_at)}</td>
+            <td>
+              <div class="event-title">${safeText(title)}</div>
+              <div class="event-meta">${safeText(meta)}</div>
+            </td>
+            <td>${formatNumber(row.quantity)}</td>
+            <td>${formatNumber(row.total_cost)}</td>
+            <td>${formatNumber(row.expected_revenue)}</td>
+            <td>${formatNumber(row.expected_profit)}</td>
+          </tr>
+        `;
+      }).join("") : `<tr><td colspan="6" class="empty">没有匹配数据</td></tr>`;
+    }
+
+    async function loadDashboard() {
+      const limit = Number(document.getElementById("limit").value || 200);
+      document.getElementById("status").textContent = "加载中";
+      const response = await fetch(`/api/dashboard?limit=${encodeURIComponent(limit)}`);
+      dashboardData = await response.json();
+      render();
+    }
+
+    function resetFilters() {
+      document.getElementById("start-date").value = "";
+      document.getElementById("end-date").value = "";
+      document.getElementById("type-filter").value = "";
+      document.getElementById("name-filter").value = "";
+      render();
+    }
+
+    for (const id of ["start-date", "end-date", "type-filter", "name-filter"]) {
+      document.getElementById(id).addEventListener("input", render);
+      document.getElementById(id).addEventListener("change", render);
+    }
+    document.getElementById("reset-filters").addEventListener("click", resetFilters);
+    document.getElementById("reload").addEventListener("click", loadDashboard);
+    loadDashboard();
+  </script>
+</body>
+</html>

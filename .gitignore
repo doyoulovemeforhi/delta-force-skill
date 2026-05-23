@@ -1,8 +1,36 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
 config.json
+config.local.json
+*.secret.json
+
+# Runtime artifacts
 screenshots/
 logs/
-!logs/production_state.json
-.env
+*.log
+*.sqlite3
+*.db
+
+# Local connector/session data
+.cc-connect/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

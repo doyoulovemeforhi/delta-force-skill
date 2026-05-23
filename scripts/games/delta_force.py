@@ -1,17 +1,19 @@
 import json
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
 from PIL import Image
 
-from scripts.click import click
+from scripts.analytics_db import record_collection, record_production, record_purchase, record_redemption
+from scripts.click import click, scroll
 from scripts.config import get_api_key, get_gui_agent_config
 from scripts.gui_agent import AliyunGUIAgent
 from scripts.keyboard import press_key
@@ -43,13 +45,54 @@ TRADING_HOUSE_DETAIL_NAME_ROI = (860 / 3840, 300 / 2160, 1200 / 3840, 220 / 2160
 TRADING_HOUSE_SELECTED_DETAIL_TITLE_ROI = (3050 / 3840, 260 / 2160, 760 / 3840, 140 / 2160)
 TRADING_HOUSE_LOWEST_PRICE_ROI = (250 / 3840, 320 / 2160, 520 / 3840, 110 / 2160)
 TRADING_HOUSE_QUANTITY_ROI = (3120 / 3840, 1440 / 2160, 380 / 3840, 90 / 2160)
+TRADING_HOUSE_SELL_SLOT_ROI = (3360 / 3840, 1440 / 2160, 360 / 3840, 90 / 2160)
 TRADING_HOUSE_TOTAL_PRICE_ROI = (3110 / 3840, 1680 / 2160, 420 / 3840, 90 / 2160)
 TRADING_HOUSE_BANNER_ROI = (1280 / 3840, 300 / 2160, 1550 / 3840, 90 / 2160)
+TRADING_HOUSE_SELL_TITLE_ROI = (2220 / 3840, 600 / 2160, 820 / 3840, 120 / 2160)
+TRADING_HOUSE_SELL_LOWEST_PRICE_ROI = (880 / 3840, 630 / 2160, 650 / 3840, 110 / 2160)
+TRADING_HOUSE_SELL_QUANTITY_ROI = (2200 / 3840, 990 / 2160, 360 / 3840, 110 / 2160)
+TRADING_HOUSE_SELL_SLOT_ROI = (2760 / 3840, 990 / 2160, 360 / 3840, 110 / 2160)
+TRADING_HOUSE_SELL_EXPECTED_INCOME_ROI = (2520 / 3840, 1340 / 2160, 540 / 3840, 120 / 2160)
 TRADING_HOUSE_TRACK_RANGE = (3072 / 3840, 3458 / 3840)
 TRADING_HOUSE_TRACK_Y = 1548 / 2160
 TRADING_HOUSE_MINUS_BUTTON = (2958 / 3840, 1548 / 2160)
 TRADING_HOUSE_PLUS_BUTTON = (3565 / 3840, 1548 / 2160)
 TRADING_HOUSE_BUY_BUTTON = (3265 / 3840, 1720 / 2160)
+TRADING_HOUSE_SELL_BUTTON = (2621 / 3840, 1514 / 2160)
+TRADING_HOUSE_SELL_BUTTON_SEARCH_ROI = (2200 / 3840, 1380 / 2160, 980 / 3840, 260 / 2160)
+MARKET_ITEM_DETAIL_SELL_BUTTON = (2370 / 3840, 744 / 2160)
+MARKET_SALE_CHOICE_LIST_BUTTON = (2808 / 3840, 1402 / 2160)
+MARKET_LISTING_CONFIRM_BUTTON = (2630 / 3840, 1500 / 2160)
+MARKET_LISTING_SUCCESS_MARKERS = ("已成功上架", "成功上架")
+PRODUCTION_ITEM_LIST_SCROLL_REGION = (270 / 3840, 815 / 2160, 500 / 3840, 590 / 2160)
+WAREHOUSE_STASH_GRID_ROI = (2670 / 3840, 260 / 2160, 1140 / 3840, 1660 / 2160)
+WAREHOUSE_STASH_SCROLL_POINT = (3785 / 3840, 1080 / 2160)
+WAREHOUSE_STASH_GRID_COLS = 9
+WAREHOUSE_STASH_GRID_CELL_HEIGHT = 128 / 2160
+WAREHOUSE_STASH_SCROLL_DELTA = -2200
+WAREHOUSE_CATEGORY_NAMES = [
+    "warehouse",
+    "gti_1",
+    "gti_2",
+    "gti_3",
+    "gti_4",
+    "special_1",
+    "special_2",
+    "special_3",
+]
+WAREHOUSE_CATEGORY_CLICK_X = 2408 / 3840
+WAREHOUSE_CATEGORY_CLICK_YS = [
+    305 / 2160,
+    410 / 2160,
+    506 / 2160,
+    604 / 2160,
+    704 / 2160,
+    808 / 2160,
+    909 / 2160,
+    1014 / 2160,
+]
+FORCED_OFFLINE_GREEN_BUTTON_HSV_MIN = np.array([65, 60, 40], dtype=np.uint8)
+FORCED_OFFLINE_GREEN_BUTTON_HSV_MAX = np.array([95, 255, 255], dtype=np.uint8)
 _production_items_cache: Optional[Dict] = None
 
 
@@ -61,6 +104,83 @@ def _result(action: str, **kwargs) -> Dict:
 
 def _load_screenshot(path: str) -> Image.Image:
     return Image.open(ROOT_DIR / path).convert("RGB")
+
+
+def _ocr_texts(image: Image.Image) -> List[str]:
+    try:
+        ocr = read_rapidocr_items(image)
+    except Exception:
+        return []
+    return [str(item.get("text") or "") for item in ocr.get("items", [])]
+
+
+def _texts_have_lobby_markers(texts: List[str]) -> bool:
+    lobby_markers = ("特勤处", "交易行", "仓库", "部门")
+    return any(marker in text for marker in lobby_markers for text in texts)
+
+
+def _focus_game_window() -> Dict:
+    activated = activate_window(WINDOW_TITLE)
+    info = get_window_info(WINDOW_TITLE)
+    clicked = False
+    if info:
+        clicked = click(int(info["width"] / 2), int(info["height"] / 2), WINDOW_TITLE, background=False)
+        time.sleep(0.2)
+    return {"activated": bool(activated), "clickedCenter": bool(clicked), "windowInfo": info}
+
+
+def enter_game_by_tab_prompt() -> Dict:
+    before_path = take_screenshot(WINDOW_TITLE)
+    before_image = _load_screenshot(before_path)
+    texts = _ocr_texts(before_image)
+    has_tab = any("tab" in text.lower() for text in texts)
+    has_start_game = any("开始游戏" in text for text in texts)
+    if _texts_have_lobby_markers(texts):
+        return _result(
+            "enter_game_by_tab_prompt",
+            success=True,
+            alreadyInLobby=True,
+            screenshotPath=before_path,
+            ocrTexts=texts,
+            hasTab=has_tab,
+            hasStartGame=has_start_game,
+        )
+    if not (has_tab and has_start_game):
+        return _result(
+            "enter_game_by_tab_prompt",
+            success=False,
+            reason="tab_start_prompt_not_found",
+            screenshotPath=before_path,
+            ocrTexts=texts,
+            hasTab=has_tab,
+            hasStartGame=has_start_game,
+        )
+
+    focus = _focus_game_window()
+    pressed = press_key("tab")
+    time.sleep(1.0)
+    after_path = take_screenshot(WINDOW_TITLE)
+    after_image = _load_screenshot(after_path)
+    after_texts = _ocr_texts(after_image)
+    reached_lobby = _texts_have_lobby_markers(after_texts)
+    prompt_still_visible = (
+        not reached_lobby
+        and any("tab" in text.lower() for text in after_texts)
+        and any("开始游戏" in text for text in after_texts)
+    )
+    return _result(
+        "enter_game_by_tab_prompt",
+        success=bool(pressed and reached_lobby),
+        key="tab",
+        focus=focus,
+        beforeScreenshotPath=before_path,
+        afterScreenshotPath=after_path,
+        beforeOcrTexts=texts,
+        afterOcrTexts=after_texts,
+        reachedLobby=reached_lobby,
+        lobbyMarkers=["特勤处", "交易行", "仓库", "部门"],
+        promptStillVisible=prompt_still_visible,
+    )
 
 
 def _trading_house_size(image: Optional[Image.Image] = None) -> Tuple[int, int]:
@@ -91,6 +211,18 @@ def _resolve_trading_point(point: Tuple[float, float], image: Optional[Image.Ima
     return int(round(width * point[0])), int(round(height * point[1]))
 
 
+def _scale_x(image_size: Tuple[int, int], value: float) -> int:
+    return max(1, int(round(value * image_size[0] / 3840)))
+
+
+def _scale_y(image_size: Tuple[int, int], value: float) -> int:
+    return max(1, int(round(value * image_size[1] / 2160)))
+
+
+def _scale_area(image_size: Tuple[int, int], value: float) -> int:
+    return max(1, int(round(value * image_size[0] * image_size[1] / (3840 * 2160))))
+
+
 def _load_production_items() -> Dict:
     global _production_items_cache
     if _production_items_cache is not None:
@@ -98,7 +230,7 @@ def _load_production_items() -> Dict:
     if not PRODUCTION_ITEMS_PATH.exists():
         _production_items_cache = {}
         return _production_items_cache
-    with PRODUCTION_ITEMS_PATH.open("r", encoding="utf-8") as handle:
+    with PRODUCTION_ITEMS_PATH.open("r", encoding="utf-8-sig") as handle:
         _production_items_cache = json.load(handle)
     return _production_items_cache
 
@@ -286,7 +418,7 @@ def _detect_visual_idle_stations() -> List[str]:
         visual_idle: List[str] = []
         for station_name in STATIONS:
             station = _find_station_anchor(image, station_name, game_width)
-            if station and _idle_slot_for_station(station, idle_slots):
+            if station and _idle_slot_for_station(station, idle_slots, image.size):
                 visual_idle.append(station_name)
         return visual_idle
     except Exception:
@@ -408,7 +540,20 @@ def _merge_runtime_economics(evaluation: Dict, runtime: Dict) -> Dict:
     merged = dict(evaluation)
     output_quantity = int(runtime.get("outputQuantity") or merged.get("outputQuantity") or 1)
     merged["outputQuantity"] = output_quantity
-    if runtime.get("unitExpectedRevenue") is not None:
+    configured_unit_revenue = _number_or_none(merged.get("unitExpectedRevenue"))
+    runtime_unit_revenue = _number_or_none(runtime.get("unitExpectedRevenue"))
+    if runtime_unit_revenue is not None and (
+        configured_unit_revenue is None or runtime_unit_revenue >= configured_unit_revenue * 0.5
+    ):
+        merged["unitExpectedRevenue"] = runtime_unit_revenue
+        merged["expectedRevenue"] = float(runtime_unit_revenue) * output_quantity
+    elif runtime_unit_revenue is not None:
+        merged.setdefault("runtimeWarnings", []).append(
+            f"ignored implausible unit revenue: {runtime_unit_revenue}"
+        )
+        if configured_unit_revenue is not None:
+            merged["expectedRevenue"] = float(configured_unit_revenue) * output_quantity
+    elif runtime.get("unitExpectedRevenue") is not None:
         merged["unitExpectedRevenue"] = runtime["unitExpectedRevenue"]
         merged["expectedRevenue"] = float(runtime["unitExpectedRevenue"]) * output_quantity
     elif runtime.get("expectedRevenue") is not None:
@@ -747,6 +892,108 @@ def check_forced_offline() -> Dict:
     )
 
 
+def _find_forced_offline_exit_by_color(image: Image.Image) -> Optional[Dict]:
+    rgb = np.array(image.convert("RGB"))
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    mask = cv2.inRange(hsv, FORCED_OFFLINE_GREEN_BUTTON_HSV_MIN, FORCED_OFFLINE_GREEN_BUTTON_HSV_MAX)
+    mask[: int(rgb.shape[0] * 0.55), :] = 0
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best = None
+    best_score = 0.0
+    for contour in contours:
+        x, y, width, height = cv2.boundingRect(contour)
+        area = width * height
+        if area < 12000 or width < 260 or height < 60:
+            continue
+        aspect = width / max(1, height)
+        if aspect < 2.5:
+            continue
+        score = float(area)
+        if score > best_score:
+            best_score = score
+            best = {
+                "x": int(x + width // 2),
+                "y": int(y + height // 2),
+                "left": int(x),
+                "top": int(y),
+                "width": int(width),
+                "height": int(height),
+                "confidence": round(min(0.99, 0.6 + area / 200000.0), 3),
+                "source": "color_fallback",
+            }
+    return best
+
+
+def _list_game_processes() -> List[Dict]:
+    try:
+        output = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq DeltaForceClient-Win64-Shipping.exe", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return []
+    processes: List[Dict] = []
+    for line in (output.stdout or "").splitlines():
+        row = line.strip().strip('"')
+        if not row or row.startswith("INFO:"):
+            continue
+        parts = [part.strip('"') for part in line.split('","')]
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[1])
+        except ValueError:
+            continue
+        processes.append({"name": parts[0].strip('"'), "pid": pid})
+    return processes
+
+
+def _close_game_processes() -> Dict:
+    processes = _list_game_processes()
+    if not processes:
+        return {"attempted": False, "found": False, "closed": [], "forced": []}
+    closed: List[int] = []
+    forced: List[int] = []
+    for proc in processes:
+        pid = proc["pid"]
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            time.sleep(2.0)
+        except Exception:
+            pass
+        if any(item["pid"] == pid for item in _list_game_processes()):
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                forced.append(pid)
+            except Exception:
+                continue
+        else:
+            closed.append(pid)
+    remaining = _list_game_processes()
+    return {
+        "attempted": True,
+        "found": True,
+        "initial": processes,
+        "closed": closed,
+        "forced": forced,
+        "remaining": remaining,
+        "success": len(remaining) == 0,
+    }
+
+
 def handle_forced_offline(background: bool = False) -> Dict:
     steps = []
     window_ready = ensure_game_window_front()
@@ -777,12 +1024,74 @@ def handle_forced_offline(background: bool = False) -> Dict:
     exit_click["action"] = "click_forced_offline_exit"
     steps.append(exit_click)
     time.sleep(1.0)
-    final_path = take_screenshot(WINDOW_TITLE)
+
+    final_path = None
+    final_state = None
+    process_close = None
+    if exit_click.get("clicked"):
+        try:
+            final_path = take_screenshot(WINDOW_TITLE)
+            final_state = check_forced_offline()
+            steps.append(final_state)
+        except RuntimeError:
+            final_state = {"detected": False, "reason": "game_window_not_capturable_after_click"}
+
+    if not exit_click.get("clicked") or (final_state and final_state.get("detected")):
+        try:
+            fallback_path = take_screenshot(WINDOW_TITLE)
+            fallback_image = _load_screenshot(fallback_path)
+            fallback_button = _find_forced_offline_exit_by_color(fallback_image)
+        except RuntimeError:
+            fallback_path = None
+            fallback_button = None
+        fallback_step = _result(
+            "detect_forced_offline_exit_color",
+            found=fallback_button is not None,
+            button=fallback_button,
+            screenshotPath=fallback_path,
+        )
+        steps.append(fallback_step)
+        if fallback_button:
+            fallback_click = click(
+                int(fallback_button["x"]),
+                int(fallback_button["y"]),
+                WINDOW_TITLE,
+                background=background,
+            )
+            time.sleep(1.0)
+            fallback_result = _result(
+                "click_forced_offline_exit_color",
+                found=True,
+                clicked=fallback_click,
+                button=fallback_button,
+            )
+            steps.append(fallback_result)
+            try:
+                final_path = take_screenshot(WINDOW_TITLE)
+                final_state = check_forced_offline()
+                steps.append(final_state)
+            except RuntimeError:
+                final_state = {"detected": False, "reason": "game_window_not_capturable_after_fallback_click"}
+
+    if final_state is None or final_state.get("detected"):
+        process_close = _close_game_processes()
+        steps.append(_result("close_game_processes", **process_close))
+        if not final_path:
+            try:
+                final_path = take_screenshot(WINDOW_TITLE)
+            except RuntimeError:
+                final_path = None
+
     return _result(
         "handle_forced_offline",
-        success=bool(exit_click.get("clicked")),
+        success=bool(
+            (final_state and not final_state.get("detected"))
+            or (process_close and process_close.get("success"))
+            or exit_click.get("clicked")
+        ),
         detected=True,
         clicked=bool(exit_click.get("clicked")),
+        closedByProcess=bool(process_close and process_close.get("attempted")),
         steps=steps,
         screenshotPath=final_path,
     )
@@ -828,10 +1137,24 @@ def _find_idle_slots(image: Image.Image, game_width: int, threshold: float = 0.4
     )
 
 
-def _idle_slot_for_station(station: Dict, idle_slots: List[Dict]) -> Optional[Dict]:
+def _idle_slot_for_station(station: Dict, idle_slots: List[Dict], image_size: Optional[Tuple[int, int]] = None) -> Optional[Dict]:
+    # OCR station anchors are usually the title text box, not the full station
+    # card. Use screenshot scale instead of title width so the idle slot below
+    # each station is not filtered out on high-resolution captures.
+    if image_size:
+        scale = max(0.5, image_size[1] / 2160)
+    else:
+        scale = max(0.5, min(2.5, station.get("y", 550) / 550))
+    min_delta = int(250 * scale)
+    max_delta = int(500 * scale)
+    x_tolerance = int(450 * scale)
     candidates = [
         slot for slot in idle_slots
-        if slot["y"] > station["y"] and 150 <= slot["y"] - station["y"] <= 550
+        if (
+            slot["y"] > station["y"]
+            and min_delta <= slot["y"] - station["y"] <= max_delta
+            and abs(slot["x"] - station["x"]) <= x_tolerance
+        )
     ]
     if not candidates:
         return None
@@ -846,11 +1169,11 @@ def _station_complete_roi(station: Dict, image_size: Tuple[int, int]) -> Tuple[i
     image_width, image_height = image_size
     station_top = station["y"] - station["height"] // 2
     station_right = station["x"] + station["width"] // 2
-    slot_top = station_top + station["height"] + 20
-    left = max(0, station_right - 95)
-    top = max(0, slot_top - 25)
-    right = min(image_width, station_right + 35)
-    bottom = min(image_height, slot_top + 95)
+    slot_top = station_top + station["height"] + _scale_y(image_size, 20)
+    left = max(0, station_right - _scale_x(image_size, 95))
+    top = max(0, slot_top - _scale_y(image_size, 25))
+    right = min(image_width, station_right + _scale_x(image_size, 35))
+    bottom = min(image_height, slot_top + _scale_y(image_size, 95))
     return left, top, right, bottom
 
 
@@ -859,14 +1182,14 @@ def _station_slot_highlight_roi(station: Dict, image_size: Tuple[int, int]) -> T
     station_left = station["x"] - station["width"] // 2
     station_right = station["x"] + station["width"] // 2
     station_top = station["y"] - station["height"] // 2
-    slot_top = station_top + station["height"] + 10
+    slot_top = station_top + station["height"] + _scale_y(image_size, 10)
     left = max(0, station_left)
     top = max(0, slot_top)
     right = min(image_width, station_right)
     # Lower-row station result cards are taller than the first-row cards in a
     # 4K screenshot. Keep enough vertical area to include the yellow completion
     # band/outline near the bottom of the card.
-    bottom = min(image_height, slot_top + 650)
+    bottom = min(image_height, slot_top + _scale_y(image_size, 650))
     return left, top, right, bottom
 
 
@@ -884,10 +1207,10 @@ def _find_yellow_complete_badge(image: Image.Image, roi: Tuple[int, int, int, in
     candidates: List[Dict] = []
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area < 60:
+        if area < _scale_area(image.size, 60):
             continue
         x, y, width, height = cv2.boundingRect(contour)
-        if height < 20 or width < 5:
+        if height < _scale_y(image.size, 20) or width < _scale_x(image.size, 5):
             continue
         aspect = height / max(1, width)
         if aspect < 1.4:
@@ -917,11 +1240,11 @@ def _find_yellow_slot_highlight(image: Image.Image, roi: Tuple[int, int, int, in
     hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
     mask = cv2.inRange(hsv, np.array([18, 55, 110]), np.array([45, 255, 255]))
     yellow_pixels = int(cv2.countNonZero(mask))
-    if yellow_pixels < 1500:
+    if yellow_pixels < _scale_area(image.size, 1500):
         return None
 
     height, width = mask.shape
-    border_width = 12
+    border_width = max(2, _scale_x(image.size, 12))
     border_mask = np.zeros_like(mask)
     border_mask[:border_width, :] = mask[:border_width, :]
     border_mask[-border_width:, :] = mask[-border_width:, :]
@@ -934,7 +1257,7 @@ def _find_yellow_slot_highlight(image: Image.Image, roi: Tuple[int, int, int, in
     wide_boxes = []
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area < 40:
+        if area < _scale_area(image.size, 40):
             continue
         x, y, width, height = cv2.boundingRect(contour)
         box = {
@@ -945,7 +1268,7 @@ def _find_yellow_slot_highlight(image: Image.Image, roi: Tuple[int, int, int, in
             "area": round(float(area), 1),
         }
         boxes.append(box)
-        if width >= int(mask.shape[1] * 0.55) and height >= 35 and area >= 1000:
+        if width >= int(mask.shape[1] * 0.55) and height >= _scale_y(image.size, 35) and area >= _scale_area(image.size, 1000):
             wide_boxes.append(box)
 
     if not boxes:
@@ -961,7 +1284,7 @@ def _find_yellow_slot_highlight(image: Image.Image, roi: Tuple[int, int, int, in
             "boxes": boxes[:10],
             "mode": "wide_yellow_completion_band",
         }
-    if border_yellow_pixels < 600:
+    if border_yellow_pixels < _scale_area(image.size, 600):
         return None
     xs = [box["x"] for box in boxes]
     ys = [box["y"] for box in boxes]
@@ -988,7 +1311,7 @@ def check_station_complete(station_name: str) -> Dict:
     highlight_roi = _station_slot_highlight_roi(station, image.size)
     highlight = _find_yellow_slot_highlight(image, highlight_roi)
     idle_slots = _find_idle_slots(image, game_width, threshold=0.75)
-    idle_slot = _idle_slot_for_station(station, idle_slots)
+    idle_slot = _idle_slot_for_station(station, idle_slots, image.size)
     due_for_collect, due_record = _station_due_for_collect(station_name)
     remaining = _read_station_overview_remaining_from_image(image, station)
     complete_by_no_timer = bool(
@@ -1046,7 +1369,7 @@ def check_station_state(station_name: str) -> Dict:
     highlight_roi = _station_slot_highlight_roi(station, image.size)
     highlight = _find_yellow_slot_highlight(image, highlight_roi)
     idle_slots = _find_idle_slots(image, game_width, threshold=0.75)
-    idle_slot = _idle_slot_for_station(station, idle_slots)
+    idle_slot = _idle_slot_for_station(station, idle_slots, image.size)
     due_for_collect, due_record = _station_due_for_collect(station_name)
     remaining = _read_station_overview_remaining_from_image(image, station)
     complete_by_no_timer = bool(
@@ -1115,7 +1438,7 @@ def _station_overview_card_roi(station: Dict, image_size: Tuple[int, int]) -> Tu
     left = max(0, station["x"] - station["width"] // 2)
     top = max(0, station["y"] - station["height"] // 2)
     right = min(image_width, station["x"] + station["width"] // 2)
-    bottom = min(image_height, top + station["height"] + 570)
+    bottom = min(image_height, top + station["height"] + _scale_y(image_size, 570))
     return left, top, right, bottom
 
 
@@ -1129,6 +1452,635 @@ def _ocr_items_in_roi(items: List[Dict], roi: Tuple[int, int, int, int]) -> List
         if x is not None and y is not None and left <= x <= right and top <= y <= bottom:
             matched.append(item)
     return sorted(matched, key=lambda item: ((item.get("box") or {}).get("y", 0), (item.get("box") or {}).get("x", 0)))
+
+
+def _resolve_inventory_roi(image: Image.Image) -> Tuple[int, int, int, int]:
+    return _resolve_trading_roi_bounds(WAREHOUSE_STASH_GRID_ROI, image)
+
+
+def _normalize_inventory_item_name(value: str) -> str:
+    text = (value or "").strip()
+    text = text.replace("脳", "x").replace("Ԫ", "").replace("#", "").replace("*", "").replace("%", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _canonical_inventory_item_name(texts: List[Dict]) -> Optional[str]:
+    raw = " ".join(str(item.get("text") or "") for item in texts)
+    normalized = raw.replace("脳", "x").replace("鑴?", "x").replace("Ԫ", "").replace("元", "")
+    normalized = normalized.replace("#", "").replace("*", "").replace("%", "")
+    compact = _normalize_market_item_text(normalized)
+    if not compact:
+        return None
+
+    if "338" in compact and "ap" in compact:
+        return ".338 AP"
+    if ("762x54" in compact or "762x54r" in compact) and "bt" in compact:
+        return "7.62x54R BT"
+    if ("762x51" in compact or "762x51mm" in compact) and "m62" in compact:
+        return "7.62x51mm M62"
+    if "ftx" in compact:
+        return "FTX"
+    if ("46x30" in compact or "6x30" in compact or "5x30" in compact) and ("apsx" in compact or "ap" in compact or "sx" in compact):
+        return "4.6x30 APSX"
+    if "46x30" in compact or re.fullmatch(r".*[56]x30.*", compact):
+        return "4.6x30"
+    if ("57x28" in compact or "53x28" in compact or "7x28" in compact) and "ss193" in compact:
+        return "5.7x28 SS193"
+    if ("57x28" in compact or "53x28" in compact or "7x28" in compact) and "ss190" in compact:
+        return "5.7x28 SS190"
+    if "57x28" in compact or "53x28" in compact or "7x28" in compact:
+        return "5.7x28"
+    if "545x39" in compact or "45x39" in compact:
+        return "5.45x39"
+    if "762x39" in compact or "62x39" in compact:
+        return "7.62x39"
+    if "556x45" in compact and "m995" in compact:
+        return "5.56x45 M995"
+    if "556x45" in compact:
+        return "5.56x45"
+    if "12gauge" in compact or compact == "gauge":
+        return "12-Gauge"
+    if "9x39" in compact:
+        return "9x39"
+    return None
+
+
+INVENTORY_NAME_ALIASES = {
+    "g3神射枪管": "G3 神射枪管",
+    "g3.神射枪管": "G3 神射枪管",
+    "全球力": "全球力量",
+    "5x30": "4.6x30",
+    "6x30": "4.6x30",
+    "gauge": "12-Gauge",
+    "12gauge": "12-Gauge",
+}
+
+
+def _normalize_inventory_item_name(value: str) -> str:
+    text = (value or "").strip()
+    text = text.replace("#", "").replace("*", "").replace("%", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _canonical_inventory_item_name(texts: List[Dict]) -> Optional[str]:
+    raw = " ".join(str(item.get("text") or "") for item in texts)
+    normalized = raw.replace("#", "").replace("*", "").replace("%", "")
+    compact = _normalize_market_item_text(normalized)
+    if not compact:
+        return None
+
+    alias = INVENTORY_NAME_ALIASES.get(compact)
+    if alias:
+        return alias
+    if "338" in compact and "ap" in compact:
+        return ".338 AP"
+    if ("762x54" in compact or "762x54r" in compact) and "bt" in compact:
+        return "7.62x54R BT"
+    if ("762x51" in compact or "762x51mm" in compact) and "m62" in compact:
+        return "7.62x51mm M62"
+    if "ftx" in compact:
+        return "FTX"
+    if ("46x30" in compact or "6x30" in compact or "5x30" in compact) and ("apsx" in compact or "ap" in compact or "sx" in compact):
+        return "4.6x30 APSX"
+    if "46x30" in compact or re.fullmatch(r".*[56]x30.*", compact):
+        return "4.6x30"
+    if ("57x28" in compact or "53x28" in compact or "7x28" in compact) and "ss193" in compact:
+        return "5.7x28 SS193"
+    if ("57x28" in compact or "53x28" in compact or "7x28" in compact) and "ss190" in compact:
+        return "5.7x28 SS190"
+    if "57x28" in compact or "53x28" in compact or "7x28" in compact:
+        return "5.7x28"
+    if "545x39" in compact or "45x39" in compact:
+        return "5.45x39"
+    if "762x39" in compact or "62x39" in compact:
+        return "7.62x39"
+    if "556x45" in compact and "m995" in compact:
+        return "5.56x45 M995"
+    if "556x45" in compact:
+        return "5.56x45"
+    if "12gauge" in compact or compact == "gauge":
+        return "12-Gauge"
+    if "9x39" in compact:
+        return "9x39"
+    return None
+
+
+def _inventory_cell_key(image: Image.Image, x: int, y: int) -> Tuple[int, int]:
+    left, top, right, bottom = _resolve_inventory_roi(image)
+    width = right - left
+    height = bottom - top
+    cell_width = width / max(1, WAREHOUSE_STASH_GRID_COLS)
+    cell_height = image.height * WAREHOUSE_STASH_GRID_CELL_HEIGHT
+    col = int(max(0, min(WAREHOUSE_STASH_GRID_COLS - 1, (x - left) // max(1, cell_width))))
+    row = int(max(0, (y - top) // max(1, cell_height)))
+    return int(col), int(row)
+
+
+def _extract_inventory_metric_value(texts: List[Dict]) -> Optional[int]:
+    numeric_items = []
+    for item in texts:
+        text = str(item.get("text") or "").strip()
+        if re.fullmatch(r"\d+", text):
+            numeric_items.append(item)
+    if not numeric_items:
+        return None
+    numeric_items.sort(key=lambda item: (((item.get("box") or {}).get("y", 0)), ((item.get("box") or {}).get("x", 0))))
+    text = str(numeric_items[-1].get("text") or "")
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _inventory_item_type(name: Optional[str], texts: List[Dict]) -> str:
+    normalized_name = _normalize_inventory_item_name(name or "")
+    compact = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", normalized_name.lower())
+    joined_text = " ".join(_normalize_inventory_item_name(str(item.get("text") or "")) for item in texts)
+    joined_compact = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", joined_text.lower())
+    haystack = f"{compact} {joined_compact}"
+
+    ammo_markers = (
+        "gauge",
+        "12gauge",
+        "9x39",
+        "46x30",
+        "57x28",
+        "545x39",
+        "556x45",
+        "762x39",
+        "762x51",
+        "762x54",
+        "子弹",
+        "弹药",
+        "霰弹",
+    )
+    equipment_markers = (
+        "护甲",
+        "背心",
+        "头盔",
+        "胸挂",
+        "背包",
+        "枪",
+        "步枪",
+        "冲锋枪",
+        "狙击",
+        "手枪",
+        "弹挂",
+        "瞄具",
+        "枪管",
+        "消音",
+        "火控",
+        "扳机",
+        "底座",
+        "维修包",
+        "夜视",
+    )
+    stackable_markers = (
+        "模型",
+        "终端",
+        "燃油",
+        "燃料",
+        "咖啡豆",
+        "档案",
+        "电话",
+        "马达",
+        "收音机",
+        "内存条",
+        "敷料包",
+        "打火机",
+        "信息",
+        "零件",
+        "材料",
+    )
+    weapon_model_markers = (
+        "ak",
+        "ar",
+        "aug",
+        "dtk",
+        "g3",
+        "m14",
+        "m22",
+        "m24",
+        "m7",
+        "mp7",
+        "mk2",
+        "r93",
+        "sv98",
+        "svd",
+        "ur",
+    )
+
+    if any(marker in haystack for marker in ammo_markers):
+        return "ammo"
+    if any(marker in haystack for marker in equipment_markers):
+        return "equipment"
+    if compact in weapon_model_markers or any(token in compact for token in weapon_model_markers):
+        return "equipment"
+    if any(marker in haystack for marker in stackable_markers):
+        return "stackable"
+    return "unknown"
+
+
+def _inventory_quantity_from_metric(item_type: str, metric_value: Optional[int]) -> Optional[int]:
+    if item_type in {"ammo", "stackable"}:
+        return metric_value
+    if item_type == "equipment":
+        return 1
+    return None
+
+
+def _extract_inventory_name(texts: List[Dict]) -> Optional[str]:
+    canonical = _canonical_inventory_item_name(texts)
+    if canonical:
+        return canonical
+
+    name_parts = []
+    for item in texts:
+        text = _normalize_inventory_item_name(str(item.get("text") or ""))
+        if not text:
+            continue
+        if re.fullmatch(r"\d+", text):
+            continue
+        if text in {"AP", "BT", "FTX", "APSX", "M995", "M62", "SS190", "SS193"}:
+            name_parts.append(text)
+            continue
+        if any(ch.isalpha() for ch in text) or any("\u4e00" <= ch <= "\u9fff" for ch in text):
+            name_parts.append(text)
+    if not name_parts:
+        return None
+    joined = " ".join(name_parts)
+    joined = re.sub(r"\s+", " ", joined).strip()
+    return joined or None
+
+
+def _read_inventory_visible_from_image(image: Image.Image) -> Dict:
+    roi = _resolve_inventory_roi(image)
+    try:
+        ocr = read_rapidocr_items(image)
+    except Exception as exc:
+        return {"success": False, "reason": "rapidocr_error", "error": str(exc), "items": [], "aggregate": {}}
+
+    items = _ocr_items_in_roi(ocr.get("items", []), roi)
+    by_cell: Dict[Tuple[int, int], List[Dict]] = {}
+    for item in items:
+        box = item.get("box") or {}
+        x = box.get("x")
+        y = box.get("y")
+        if x is None or y is None:
+            continue
+        key = _inventory_cell_key(image, int(x), int(y))
+        by_cell.setdefault(key, []).append(item)
+
+    parsed_items = []
+    aggregate: Dict[str, Dict[str, Union[int, List[Dict]]]] = {}
+    for (col, row), cell_items in sorted(by_cell.items(), key=lambda pair: (pair[0][1], pair[0][0])):
+        name = _extract_inventory_name(cell_items)
+        metric_value = _extract_inventory_metric_value(cell_items)
+        item_type = _inventory_item_type(name, cell_items)
+        quantity = _inventory_quantity_from_metric(item_type, metric_value)
+        if not name and metric_value is None:
+            continue
+        parsed = {
+            "name": name,
+            "quantity": quantity,
+            "itemType": item_type,
+            "metricValue": metric_value,
+            "metricKind": "stack_quantity" if item_type in {"ammo", "stackable"} else "status_value",
+            "col": col,
+            "row": row,
+            "texts": [item.get("text") for item in cell_items],
+        }
+        parsed_items.append(parsed)
+        if name:
+            bucket = aggregate.setdefault(
+                name,
+                {
+                    "quantity": 0,
+                    "stackCount": 0,
+                    "itemType": item_type,
+                    "metricKind": "stack_quantity" if item_type in {"ammo", "stackable"} else "status_value",
+                    "statusValues": [],
+                    "stacks": [],
+                },
+            )
+            if isinstance(quantity, int):
+                bucket["quantity"] += quantity
+            if item_type == "equipment" and isinstance(metric_value, int):
+                bucket["statusValues"].append(metric_value)
+            bucket["stackCount"] += 1
+            bucket["stacks"].append(
+                {
+                    "row": row,
+                    "col": col,
+                    "quantity": quantity,
+                    "metricValue": metric_value,
+                    "itemType": item_type,
+                }
+            )
+
+    return {
+        "success": True,
+        "roi": {"left": roi[0], "top": roi[1], "right": roi[2], "bottom": roi[3]},
+        "items": parsed_items,
+        "aggregate": aggregate,
+        "ocrTexts": [item.get("text") for item in items],
+    }
+
+
+def read_inventory_visible() -> Dict:
+    path = take_screenshot(WINDOW_TITLE)
+    image = _load_screenshot(path)
+    read = _read_inventory_visible_from_image(image)
+    read.update(_result("read_inventory_visible", screenshotPath=path))
+    return read
+
+
+def _inventory_page_signature(items: List[Dict]) -> str:
+    visible = []
+    for item in items:
+        name = _normalize_inventory_item_name(str(item.get("name") or ""))
+        quantity = item.get("quantity")
+        metric_value = item.get("metricValue")
+        row = item.get("row")
+        col = item.get("col")
+        if name or quantity is not None or metric_value is not None:
+            visible.append(f"{row}:{col}:{name}:{quantity}:{metric_value}")
+    return "|".join(visible)
+
+
+def _inventory_item_sequence_signature(item: Dict) -> str:
+    name = _normalize_inventory_item_name(str(item.get("name") or ""))
+    quantity = item.get("quantity")
+    metric_value = item.get("metricValue")
+    item_type = item.get("itemType")
+    return f"{name}:{item_type}:{quantity}:{metric_value}"
+
+
+def _inventory_overlap_count(previous_items: List[Dict], current_items: List[Dict]) -> int:
+    previous = [_inventory_item_sequence_signature(item) for item in previous_items]
+    current = [_inventory_item_sequence_signature(item) for item in current_items]
+    max_overlap = min(len(previous), len(current))
+    for size in range(max_overlap, 0, -1):
+        if previous[-size:] == current[:size]:
+            return size
+    return 0
+
+
+def _add_inventory_items_to_aggregate(aggregate: Dict, items: List[Dict]) -> None:
+    for item in items:
+        name = item.get("name")
+        if not name:
+            continue
+        item_type = item.get("itemType") or "unknown"
+        current = aggregate.setdefault(
+            name,
+            {
+                "quantity": 0,
+                "stackCount": 0,
+                "pages": 0,
+                "itemType": item_type,
+                "metricKind": "stack_quantity" if item_type in {"ammo", "stackable"} else "status_value",
+                "statusValues": [],
+            },
+        )
+        quantity = item.get("quantity")
+        metric_value = item.get("metricValue")
+        if isinstance(quantity, int):
+            current["quantity"] += quantity
+        if item_type == "equipment" and isinstance(metric_value, int):
+            current["statusValues"].append(metric_value)
+        current["stackCount"] += 1
+        current["pages"] += 1
+
+
+def _inventory_visual_signature(image: Image.Image) -> str:
+    left, top, right, bottom = _resolve_inventory_roi(image)
+    crop = image.crop((left, top, right, bottom)).resize((96, 128)).convert("L")
+    arr = np.array(crop, dtype=np.uint8)
+    step = max(1, int(arr.mean()) // 16)
+    quantized = (arr // max(1, step)).astype(np.uint8)
+    return str(hash(quantized.tobytes()))
+
+
+def scan_inventory_stash(max_scrolls: int = 20, background: bool = False) -> Dict:
+    pages = []
+    aggregate: Dict[str, Dict[str, Union[int, int]]] = {}
+    seen_signatures = set()
+    seen_visual_signatures = set()
+    last_path = None
+    previous_items: List[Dict] = []
+
+    for attempt in range(max_scrolls + 1):
+        path = take_screenshot(WINDOW_TITLE)
+        image = _load_screenshot(path)
+        read = _read_inventory_visible_from_image(image)
+        read["pageIndex"] = attempt
+        read["screenshotPath"] = path
+        pages.append(read)
+        last_path = path
+
+        if not read.get("success"):
+            return _result(
+                "scan_inventory_stash",
+                success=False,
+                reason=read.get("reason", "inventory_read_failed"),
+                pages=pages,
+                screenshotPath=path,
+            )
+
+        signature = _inventory_page_signature(read.get("items", []))
+        visual_signature = _inventory_visual_signature(image)
+        read["visualSignature"] = visual_signature
+        if signature in seen_signatures or visual_signature in seen_visual_signatures:
+            pages[-1]["repeatedSignature"] = True
+            break
+        seen_signatures.add(signature)
+        seen_visual_signatures.add(visual_signature)
+
+        current_items = read.get("items", [])
+        overlap_count = _inventory_overlap_count(previous_items, current_items) if previous_items else 0
+        new_items = current_items[overlap_count:]
+        read["overlapCount"] = overlap_count
+        read["newItemCount"] = len(new_items)
+        _add_inventory_items_to_aggregate(aggregate, new_items)
+        if previous_items and not new_items:
+            pages[-1]["noNewItems"] = True
+            break
+        previous_items = current_items
+
+        if attempt >= max_scrolls:
+            break
+
+        width, height = _trading_house_size(image)
+        scroll_x = int(round(width * WAREHOUSE_STASH_SCROLL_POINT[0]))
+        scroll_y = int(round(height * WAREHOUSE_STASH_SCROLL_POINT[1]))
+        scrolled = scroll(scroll_x, scroll_y, WINDOW_TITLE, wheel_delta=WAREHOUSE_STASH_SCROLL_DELTA, background=background)
+        pages[-1]["scroll"] = {"x": scroll_x, "y": scroll_y, "wheelDelta": WAREHOUSE_STASH_SCROLL_DELTA, "success": scrolled}
+        if not scrolled:
+            break
+        time.sleep(0.5)
+
+    return _result(
+        "scan_inventory_stash",
+        success=True,
+        pageCount=len(pages),
+        aggregate=aggregate,
+        pages=pages,
+        screenshotPath=last_path,
+    )
+
+
+def _ensure_warehouse_page(background: bool = False) -> Dict:
+    path = take_screenshot(WINDOW_TITLE)
+    image = _load_screenshot(path)
+    found = _find_ocr_text_candidates(image, "仓库")
+    candidates = found.get("candidates") or []
+    top_nav = [
+        candidate
+        for candidate in candidates
+        if 0 <= int(candidate.get("y") or 0) <= int(image.height * 0.09)
+    ]
+    if not top_nav:
+        return _result(
+            "ensure_warehouse_page",
+            success=False,
+            reason="warehouse_nav_not_found",
+            candidates=candidates,
+            screenshotPath=path,
+        )
+
+    target = top_nav[0]
+    clicked = click(int(target["x"]), int(target["y"]), WINDOW_TITLE, background=background)
+    time.sleep(0.8)
+    after_path = take_screenshot(WINDOW_TITLE)
+    return _result(
+        "ensure_warehouse_page",
+        success=clicked,
+        target=target,
+        screenshotPath=after_path,
+    )
+
+
+def _warehouse_category_points(image: Image.Image) -> List[Dict]:
+    width, height = image.size
+    points = []
+    for index, y_ratio in enumerate(WAREHOUSE_CATEGORY_CLICK_YS):
+        points.append(
+            {
+                "index": index,
+                "name": WAREHOUSE_CATEGORY_NAMES[index] if index < len(WAREHOUSE_CATEGORY_NAMES) else f"box_{index + 1}",
+                "x": int(round(width * WAREHOUSE_CATEGORY_CLICK_X)),
+                "y": int(round(height * y_ratio)),
+            }
+        )
+    return points
+
+
+def _merge_inventory_aggregate(target: Dict, source: Dict, box_name: str) -> None:
+    for name, bucket in source.items():
+        item_type = bucket.get("itemType") or "unknown"
+        metric_kind = bucket.get("metricKind") or ("stack_quantity" if item_type in {"ammo", "stackable"} else "status_value")
+        current = target.setdefault(
+            name,
+            {
+                "quantity": 0,
+                "stackCount": 0,
+                "boxes": 0,
+                "itemType": item_type,
+                "metricKind": metric_kind,
+                "statusValues": [],
+                "boxBreakdown": [],
+            },
+        )
+        quantity = int(bucket.get("quantity") or 0)
+        stack_count = int(bucket.get("stackCount") or len(bucket.get("stacks") or []))
+        current["quantity"] += quantity
+        current["stackCount"] += stack_count
+        current["boxes"] += 1
+        current["statusValues"].extend(bucket.get("statusValues") or [])
+        current["boxBreakdown"].append(
+            {
+                "box": box_name,
+                "quantity": quantity,
+                "stackCount": stack_count,
+                "itemType": item_type,
+                "metricKind": metric_kind,
+                "statusValues": bucket.get("statusValues") or [],
+            }
+        )
+
+
+def _compact_inventory_scan(scan: Dict) -> Dict:
+    return {
+        "success": scan.get("success"),
+        "reason": scan.get("reason"),
+        "pageCount": scan.get("pageCount"),
+        "aggregate": scan.get("aggregate"),
+        "screenshotPath": scan.get("screenshotPath"),
+    }
+
+
+def scan_inventory_all_boxes(
+    max_scrolls: int = 0,
+    background: bool = False,
+    include_pages: bool = False,
+) -> Dict:
+    steps = []
+    navigation = _ensure_warehouse_page(background=background)
+    steps.append(navigation)
+    if not navigation.get("success"):
+        return _result(
+            "scan_inventory_all_boxes",
+            success=False,
+            reason="warehouse_navigation_failed",
+            steps=steps,
+            aggregate={},
+            boxes=[],
+            screenshotPath=navigation.get("screenshotPath"),
+        )
+
+    start_path = take_screenshot(WINDOW_TITLE)
+    image = _load_screenshot(start_path)
+    category_points = _warehouse_category_points(image)
+    boxes = []
+    aggregate: Dict[str, Dict] = {}
+    last_path = start_path
+
+    for point in category_points:
+        clicked = click(point["x"], point["y"], WINDOW_TITLE, background=background)
+        time.sleep(0.7)
+        scan = scan_inventory_stash(max_scrolls=max_scrolls, background=background)
+        last_path = scan.get("screenshotPath") or last_path
+        box_name = point["name"]
+        box_summary = {
+            "box": box_name,
+            "index": point["index"],
+            "x": point["x"],
+            "y": point["y"],
+            "clicked": clicked,
+            "success": scan.get("success"),
+            "pageCount": scan.get("pageCount"),
+            "aggregate": scan.get("aggregate"),
+            "screenshotPath": scan.get("screenshotPath"),
+        }
+        if include_pages:
+            box_summary["pages"] = scan.get("pages")
+        boxes.append(box_summary)
+        if clicked and scan.get("success"):
+            _merge_inventory_aggregate(aggregate, scan.get("aggregate", {}), box_name)
+
+    return _result(
+        "scan_inventory_all_boxes",
+        success=True,
+        categoryCount=len(boxes),
+        aggregate=aggregate,
+        boxes=boxes,
+        categoryPoints=category_points,
+        steps=steps,
+        screenshotPath=last_path,
+    )
 
 
 def _read_station_overview_remaining_from_image(image: Image.Image, station: Dict) -> Dict:
@@ -1296,7 +2248,7 @@ def click_station_idle_slot(station_name: str, background: bool = False) -> Dict
         )
 
     idle_slots = _find_idle_slots(image, game_width, threshold=0.75)
-    slot = _idle_slot_for_station(station, idle_slots)
+    slot = _idle_slot_for_station(station, idle_slots, image.size)
     if not slot:
         return _result(
             "click_station_idle_slot",
@@ -1702,7 +2654,9 @@ def collect_completed_stations(background: bool = False) -> Dict:
             skipped.append(station)
         time.sleep(0.4)
     final_path = take_screenshot(WINDOW_TITLE)
-    return _result("collect_completed", collected=collected, skipped=skipped, steps=steps, screenshotPath=final_path)
+    summary = _result("collect_completed", collected=collected, skipped=skipped, steps=steps, screenshotPath=final_path)
+    record_collection(summary)
+    return summary
 
 
 def _ensure_teqinchu_overview(background: bool = False, attempts: int = 3) -> Tuple[Dict, List[Dict]]:
@@ -1972,6 +2926,34 @@ def _market_target_tokens(target_name: str) -> List[str]:
     return [token for token in tokens if len(token) >= 2]
 
 
+def _market_item_text_matches(target_name: str, candidate_text: str) -> bool:
+    target = _normalize_market_item_text(target_name)
+    candidate = _normalize_market_item_text(candidate_text)
+    if not target or not candidate:
+        return False
+    if target in candidate or candidate in target:
+        return True
+    tokens = _market_target_tokens(target_name)
+    token_hits = sum(1 for token in tokens if token in candidate)
+    return token_hits >= max(2, min(len(tokens), 3)) or _market_text_similarity(target_name, candidate_text) >= 0.78
+
+
+def _market_sale_detail_matches_item(detail: Dict, item_name: str) -> bool:
+    if not detail.get("success"):
+        return False
+    return _market_item_text_matches(item_name, detail.get("itemTitle") or "")
+
+
+def _ocr_joined_text(image: Image.Image) -> Tuple[str, List[str]]:
+    texts = _ocr_texts(image)
+    return "\n".join(texts), texts
+
+
+def _ocr_text_has_any(joined_text: str, markers: Tuple[str, ...]) -> bool:
+    normalized = _normalize_market_item_text(joined_text)
+    return any(marker in joined_text or _normalize_market_item_text(marker) in normalized for marker in markers)
+
+
 def _market_result_like_text_count(items: List[Dict]) -> int:
     count = 0
     for item in items:
@@ -2012,7 +2994,8 @@ def _find_market_item_candidates(target_name: str, image: Image.Image, roi: Opti
             continue
         similarity = _market_text_similarity(target_name, text)
         token_hits = sum(1 for token in target_tokens if token in normalized)
-        if similarity < 0.68 and token_hits == 0:
+        min_token_hits = 2 if target_tokens else 1
+        if similarity < 0.68 and token_hits < min_token_hits:
             continue
         box = item.get("box") or {}
         if box.get("x") is None or box.get("y") is None:
@@ -2124,7 +3107,7 @@ def _market_result_list_looks_visible(image: Image.Image) -> bool:
     except Exception:
         return False
     items = _ocr_items_in_roi(ocr.get("items", []), _resolve_trading_roi_bounds(TRADING_HOUSE_RESULTS_ROI, image))
-    return _market_result_like_text_count(items) >= 2
+    return _market_result_like_text_count(items) >= 1
 
 
 def _ensure_market_results_list(background: bool = False) -> Dict:
@@ -2156,12 +3139,16 @@ def _market_listing_click_point(match: Dict) -> Tuple[int, int]:
     top = int(box.get("top", match.get("y", 0)))
     bottom = int(box.get("bottom", match.get("y", 0)))
     center_x = int(match.get("x", (left + right) / 2))
+    width, height = _trading_house_size()
+    image_size = (width, height)
     results_left, results_top, results_right, results_bottom = _resolve_trading_roi_bounds(TRADING_HOUSE_RESULTS_ROI)
-    body_x = max(results_left + 40, min(center_x, results_right - 40))
-    body_y = bottom + 110
-    if body_y < top + 60:
-        body_y = top + 80
-    body_y = max(results_top + 40, min(body_y, results_bottom - 40))
+    pad_x = _scale_x(image_size, 40)
+    pad_y = _scale_y(image_size, 40)
+    body_x = max(results_left + pad_x, min(center_x, results_right - pad_x))
+    body_y = bottom + _scale_y(image_size, 110)
+    if body_y < top + _scale_y(image_size, 60):
+        body_y = top + _scale_y(image_size, 80)
+    body_y = max(results_top + pad_y, min(body_y, results_bottom - pad_y))
     return body_x, body_y
 
 
@@ -2205,8 +3192,125 @@ def read_market_detail_state() -> Dict:
     )
 
 
+def read_market_sale_detail_state() -> Dict:
+    path = take_screenshot(WINDOW_TITLE)
+    image = _load_screenshot(path)
+    title = _read_ocr_text_from_roi(image, _resolve_trading_roi(TRADING_HOUSE_SELL_TITLE_ROI, image))
+    lowest = _read_ocr_text_from_roi(image, _resolve_trading_roi(TRADING_HOUSE_SELL_LOWEST_PRICE_ROI, image))
+    quantity = _read_ocr_text_from_roi(image, _resolve_trading_roi(TRADING_HOUSE_SELL_QUANTITY_ROI, image))
+    slots = _read_ocr_text_from_roi(image, _resolve_trading_roi(TRADING_HOUSE_SELL_SLOT_ROI, image))
+    expected_income = _read_ocr_text_from_roi(image, _resolve_trading_roi(TRADING_HOUSE_SELL_EXPECTED_INCOME_ROI, image))
+    current_quantity, max_quantity = _extract_quantity_pair(quantity.get("text"))
+    used_slots, max_slots = _extract_quantity_pair(slots.get("text"))
+    return _result(
+        "read_market_sale_detail_state",
+        success=bool(title.get("text") or quantity.get("text") or slots.get("text")),
+        itemTitle=title.get("text"),
+        lowestPriceText=lowest.get("text"),
+        lowestPrice=_extract_last_int(lowest.get("text")),
+        quantityText=quantity.get("text"),
+        currentQuantity=current_quantity,
+        maxQuantity=max_quantity,
+        sellSlotsText=slots.get("text"),
+        usedSlots=used_slots,
+        maxSlots=max_slots,
+        expectedIncomeText=expected_income.get("text"),
+        expectedIncome=_extract_last_int(expected_income.get("text")),
+        screenshotPath=path,
+    )
+
+
+def read_market_sale_overview_state() -> Dict:
+    path = take_screenshot(WINDOW_TITLE)
+    image = _load_screenshot(path)
+    texts = _ocr_texts(image)
+    joined = "\n".join(texts)
+    listing_count = _extract_quantity_pair(joined)
+    return _result(
+        "read_market_sale_overview_state",
+        success=bool(texts),
+        listingCountText=joined,
+        usedSlots=listing_count[0],
+        maxSlots=listing_count[1],
+        hasListingControls=("鏌ョ湅" in joined or "查看" in joined) and ("涓嬫灦" in joined or "下架" in joined),
+        ocrTexts=texts,
+        screenshotPath=path,
+    )
+
+
 def _click_client_point(point: Tuple[int, int], background: bool = False) -> bool:
     return click(point[0], point[1], WINDOW_TITLE, background=background)
+
+
+def _click_client_point_pyautogui(point: Tuple[int, int]) -> bool:
+    try:
+        import pyautogui
+    except Exception:
+        return False
+    if not activate_window(WINDOW_TITLE):
+        return False
+    win = get_window_info(WINDOW_TITLE)
+    if not win:
+        return False
+    try:
+        pyautogui.FAILSAFE = False
+        pyautogui.moveTo(win["left"] + point[0], win["top"] + point[1], duration=0.12)
+        time.sleep(0.08)
+        pyautogui.click()
+        return True
+    except Exception:
+        return False
+
+
+def _click_market_point(point: Tuple[float, float], image: Image.Image, background: bool = False) -> Dict:
+    client_point = _resolve_trading_point(point, image)
+    clicked = False
+    method = "foreground_pyautogui"
+    if not background:
+        clicked = _click_client_point_pyautogui(client_point)
+    if not clicked:
+        method = "standard_click"
+        clicked = _click_client_point(client_point, background=background)
+    return _result(
+        "click_market_point",
+        success=clicked,
+        method=method,
+        x=client_point[0],
+        y=client_point[1],
+    )
+
+
+def _detect_market_sell_button(image: Image.Image) -> Optional[Dict]:
+    left, top, width, height = _resolve_trading_roi(TRADING_HOUSE_SELL_BUTTON_SEARCH_ROI, image)
+    crop = np.array(image.crop((left, top, left + width, top + height)).convert("RGB"))
+    hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
+    mask = cv2.inRange(hsv, FORCED_OFFLINE_GREEN_BUTTON_HSV_MIN, FORCED_OFFLINE_GREEN_BUTTON_HSV_MAX)
+    num_labels, _labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
+    best = None
+    for idx in range(1, num_labels):
+        x, y, w, h, area = stats[idx]
+        if area < 2500:
+            continue
+        if w < 180 or h < 50:
+            continue
+        score = area
+        if best is None or score > best["score"]:
+            best = {
+                "x": int(left + centroids[idx][0]),
+                "y": int(top + centroids[idx][1]),
+                "width": int(w),
+                "height": int(h),
+                "area": int(area),
+                "score": int(score),
+                "roi": {"left": left, "top": top, "right": left + width, "bottom": top + height},
+                "box": {
+                    "left": int(left + x),
+                    "top": int(top + y),
+                    "right": int(left + x + w),
+                    "bottom": int(top + y + h),
+                },
+            }
+    return best
 
 
 def set_market_purchase_quantity(target_quantity: int, background: bool = False) -> Dict:
@@ -2424,7 +3528,7 @@ def buy_market_item_quantity(item_name: str, quantity: int, background: bool = F
     time.sleep(0.6)
     exit_path = take_screenshot(WINDOW_TITLE)
     steps.append(_result("exit_market_purchase_detail", success=True, key="esc", screenshotPath=exit_path))
-    return _result(
+    summary = _result(
         "buy_market_item_quantity",
         success=True,
         itemName=item_name,
@@ -2437,6 +3541,275 @@ def buy_market_item_quantity(item_name: str, quantity: int, background: bool = F
         steps=steps,
         screenshotPath=exit_path or latest_screenshot,
         detailScreenshotPath=latest_screenshot,
+    )
+    record_purchase(summary)
+    return summary
+
+
+def sell_market_selected_item(item_name: Optional[str] = None, background: bool = False) -> Dict:
+    steps = []
+    before = read_market_sale_detail_state()
+    steps.append(before)
+    if not before.get("success"):
+        return _result(
+            "sell_market_selected_item",
+            success=False,
+            reason="sell_detail_read_failed",
+            steps=steps,
+            screenshotPath=before.get("screenshotPath"),
+        )
+    if before.get("currentQuantity") is None or before.get("maxQuantity") is None:
+        return _result(
+            "sell_market_selected_item",
+            success=False,
+            reason="not_on_sale_detail_page",
+            itemName=item_name,
+            steps=steps,
+            screenshotPath=before.get("screenshotPath"),
+        )
+    if item_name and not _market_sale_detail_matches_item(before, item_name):
+        return _result(
+            "sell_market_selected_item",
+            success=False,
+            reason="sale_detail_item_mismatch",
+            itemName=item_name,
+            itemTitle=before.get("itemTitle"),
+            steps=steps,
+            screenshotPath=before.get("screenshotPath"),
+        )
+
+    before_image = _load_screenshot(before.get("screenshotPath"))
+    detected_sell_button = _detect_market_sell_button(before_image)
+    sell_button = (
+        (detected_sell_button["x"], detected_sell_button["y"])
+        if detected_sell_button
+        else _resolve_trading_point(TRADING_HOUSE_SELL_BUTTON, before_image)
+    )
+    clicked = False
+    click_method = "foreground_pyautogui_detected" if detected_sell_button else "foreground_pyautogui_fallback"
+    if not background:
+        clicked = _click_client_point_pyautogui(sell_button)
+    if not clicked:
+        click_method = "standard_click_detected" if detected_sell_button else "standard_click_fallback"
+        clicked = _click_client_point(sell_button, background=background)
+    steps.append(
+        _result(
+            "click_market_sell_button",
+            success=clicked,
+            method=click_method,
+            x=sell_button[0],
+            y=sell_button[1],
+            detectedButton=detected_sell_button,
+        )
+    )
+    time.sleep(1.2)
+
+    after = read_market_sale_overview_state()
+    steps.append(after)
+    after_detail = read_market_sale_detail_state()
+    steps.append(after_detail)
+
+    before_title = before.get("itemTitle") or ""
+    after_text = after.get("listingCountText") or ""
+    item_visible = bool(before_title and _normalize_market_item_text(before_title) in _normalize_market_item_text(after_text))
+    overview_confirmed = (
+        clicked
+        and item_visible
+        and bool(after.get("hasListingControls"))
+    )
+    before_quantity = before.get("currentQuantity")
+    before_max_quantity = before.get("maxQuantity")
+    after_max_quantity = after_detail.get("maxQuantity")
+    inventory_decreased = (
+        clicked
+        and isinstance(before_quantity, int)
+        and before_quantity > 0
+        and isinstance(before_max_quantity, int)
+        and isinstance(after_max_quantity, int)
+        and after_max_quantity <= before_max_quantity - before_quantity
+    )
+    success = overview_confirmed or inventory_decreased
+    reason = None if success else "sell_not_confirmed_by_listing_overview"
+
+    return _result(
+        "sell_market_selected_item",
+        success=success,
+        reason=reason,
+        confirmationMethod="overview" if overview_confirmed else ("inventory_decreased" if inventory_decreased else None),
+        itemTitle=before_title,
+        itemVisibleInOverview=item_visible,
+        hasListingControls=after.get("hasListingControls"),
+        beforeUsedSlots=before.get("usedSlots"),
+        afterUsedSlots=after.get("usedSlots"),
+        beforeQuantity=before_quantity,
+        beforeMaxQuantity=before_max_quantity,
+        afterMaxQuantity=after_max_quantity,
+        steps=steps,
+        screenshotPath=after_detail.get("screenshotPath") or after.get("screenshotPath") or before.get("screenshotPath"),
+        detailScreenshotPath=after_detail.get("screenshotPath") or after.get("screenshotPath"),
+    )
+
+
+def sell_market_selected_equipment_item(item_name: str, background: bool = False) -> Dict:
+    steps = []
+    detail = read_market_sale_detail_state()
+    steps.append(detail)
+    if not _market_sale_detail_matches_item(detail, item_name):
+        return _result(
+            "sell_market_selected_equipment_item",
+            success=False,
+            reason="sale_detail_item_mismatch",
+            itemName=item_name,
+            itemTitle=detail.get("itemTitle"),
+            steps=steps,
+            screenshotPath=detail.get("screenshotPath"),
+        )
+
+    detail_image = _load_screenshot(detail.get("screenshotPath"))
+    click_sell = _click_market_point(MARKET_ITEM_DETAIL_SELL_BUTTON, detail_image, background=background)
+    click_sell["stage"] = "item_detail_sell"
+    steps.append(click_sell)
+    if not click_sell.get("success"):
+        return _result(
+            "sell_market_selected_equipment_item",
+            success=False,
+            reason="item_detail_sell_click_failed",
+            itemName=item_name,
+            itemTitle=detail.get("itemTitle"),
+            steps=steps,
+            screenshotPath=detail.get("screenshotPath"),
+        )
+
+    time.sleep(0.8)
+    choice_path = take_screenshot(WINDOW_TITLE)
+    choice_image = _load_screenshot(choice_path)
+    choice_text, choice_texts = _ocr_joined_text(choice_image)
+    steps.append(
+        _result(
+            "read_market_sale_choice_page",
+            success=bool(choice_texts),
+            itemName=item_name,
+            itemMatched=_market_item_text_matches(item_name, choice_text),
+            ocrTexts=choice_texts,
+            screenshotPath=choice_path,
+        )
+    )
+
+    click_choice = _click_market_point(MARKET_SALE_CHOICE_LIST_BUTTON, choice_image, background=background)
+    click_choice["stage"] = "sale_choice_listing"
+    steps.append(click_choice)
+    if not click_choice.get("success"):
+        return _result(
+            "sell_market_selected_equipment_item",
+            success=False,
+            reason="sale_choice_listing_click_failed",
+            itemName=item_name,
+            itemTitle=detail.get("itemTitle"),
+            steps=steps,
+            screenshotPath=choice_path,
+        )
+
+    time.sleep(1.0)
+    confirm_detail = read_market_sale_detail_state()
+    steps.append(confirm_detail)
+    confirm_path = confirm_detail.get("screenshotPath")
+    confirm_image = _load_screenshot(confirm_path)
+    click_confirm = _click_market_point(MARKET_LISTING_CONFIRM_BUTTON, confirm_image, background=background)
+    click_confirm["stage"] = "listing_confirm"
+    steps.append(click_confirm)
+    if not click_confirm.get("success"):
+        return _result(
+            "sell_market_selected_equipment_item",
+            success=False,
+            reason="listing_confirm_click_failed",
+            itemName=item_name,
+            itemTitle=detail.get("itemTitle"),
+            expectedIncome=confirm_detail.get("expectedIncome"),
+            steps=steps,
+            screenshotPath=confirm_path,
+        )
+
+    time.sleep(1.2)
+    final_path = take_screenshot(WINDOW_TITLE)
+    final_image = _load_screenshot(final_path)
+    final_text, final_texts = _ocr_joined_text(final_image)
+    success_banner = _ocr_text_has_any(final_text, MARKET_LISTING_SUCCESS_MARKERS)
+    item_confirmed = _market_item_text_matches(item_name, final_text) or _market_item_text_matches(detail.get("itemTitle") or "", final_text)
+    success = success_banner and item_confirmed
+    steps.append(
+        _result(
+            "read_market_listing_result",
+            success=success,
+            successBanner=success_banner,
+            itemConfirmed=item_confirmed,
+            ocrTexts=final_texts,
+            screenshotPath=final_path,
+        )
+    )
+
+    return _result(
+        "sell_market_selected_equipment_item",
+        success=success,
+        reason=None if success else "listing_success_banner_not_confirmed",
+        confirmationMethod="success_banner_ocr" if success else None,
+        itemName=item_name,
+        itemTitle=detail.get("itemTitle"),
+        lowestPrice=confirm_detail.get("lowestPrice"),
+        expectedIncome=confirm_detail.get("expectedIncome"),
+        steps=steps,
+        screenshotPath=final_path,
+        detailScreenshotPath=confirm_path,
+    )
+
+
+def sell_market_item(item_name: str, background: bool = False) -> Dict:
+    steps = []
+    current_detail = read_market_sale_detail_state()
+    steps.append(current_detail)
+    sale_detail = current_detail
+    if not _market_sale_detail_matches_item(sale_detail, item_name):
+        select = click_market_item_by_name(item_name, background=background)
+        steps.append(select)
+        if not select.get("clicked"):
+            return _result(
+                "sell_market_item",
+                success=False,
+                reason="market_item_not_selected",
+                itemName=item_name,
+                steps=steps,
+                screenshotPath=select.get("afterScreenshotPath") or select.get("screenshotPath"),
+            )
+        sale_detail = read_market_sale_detail_state()
+        steps.append(sale_detail)
+        if not _market_sale_detail_matches_item(sale_detail, item_name):
+            return _result(
+                "sell_market_item",
+                success=False,
+                reason="sale_detail_item_not_confirmed",
+                itemName=item_name,
+                selectedItemTitle=sale_detail.get("itemTitle"),
+                steps=steps,
+                screenshotPath=sale_detail.get("screenshotPath") or select.get("afterScreenshotPath") or select.get("screenshotPath"),
+            )
+
+    if sale_detail.get("currentQuantity") is not None and sale_detail.get("maxQuantity") is not None:
+        sale = sell_market_selected_item(item_name=item_name, background=background)
+    else:
+        sale = sell_market_selected_equipment_item(item_name=item_name, background=background)
+    steps.append(sale)
+    return _result(
+        "sell_market_item",
+        success=bool(sale.get("success")),
+        reason=sale.get("reason"),
+        itemName=item_name,
+        confirmationMethod=sale.get("confirmationMethod"),
+        itemTitle=sale.get("itemTitle"),
+        lowestPrice=sale.get("lowestPrice"),
+        expectedIncome=sale.get("expectedIncome"),
+        usedSlotsBefore=sale.get("beforeUsedSlots"),
+        usedSlotsAfter=sale.get("afterUsedSlots"),
+        steps=steps,
+        screenshotPath=sale.get("screenshotPath"),
     )
 
 
@@ -2546,6 +3919,7 @@ def redeem_department_item(
 
     rounds = []
     completed_times = 0
+    total_cost = 0
     for round_index in range(1, times + 1):
         sold_out = detect_text_by_ocr("已售")
         if sold_out.get("found"):
@@ -2570,6 +3944,13 @@ def redeem_department_item(
                 rounds.append(round_result)
                 break
             time.sleep(0.8)
+
+            cost_read = read_screen_metric("fill_confirm_cost")
+            cost_read["action"] = "read_fill_confirm_cost_for_redemption"
+            round_result["fillConfirmCost"] = cost_read
+            if cost_read.get("success") and cost_read.get("value") is not None:
+                round_result["estimatedCost"] = cost_read.get("value")
+                total_cost += cost_read.get("value")
 
             fill_confirm = click_fill_confirm(background=background)
             round_result["fillConfirm"] = fill_confirm
@@ -2600,40 +3981,42 @@ def redeem_department_item(
         time.sleep(1.0)
 
     final_path = take_screenshot(WINDOW_TITLE)
-    return _result(
+    summary = _result(
         "redeem_department_item",
         success=completed_times == times,
         departmentName=department_name,
         itemName=item_name,
         requestedTimes=times,
         completedTimes=completed_times,
+        totalCost=total_cost,
         navigation=navigation,
         rounds=rounds,
         screenshotPath=final_path,
     )
+    record_redemption(summary)
+    return summary
 
 
-def click_item_by_ocr_text(item_name: str, background: bool = False) -> Dict:
-    path = take_screenshot(WINDOW_TITLE)
-    image = _load_screenshot(path)
-    query = _normalize_ocr_match_text(item_name)
-    if not query:
-        return _result("click_item_by_ocr_text", itemName=item_name, found=False, reason="empty_query", screenshotPath=path)
+def _production_item_list_scroll_point(image: Image.Image) -> Tuple[int, int]:
+    region_left, region_top, region_width, region_height = PRODUCTION_ITEM_LIST_SCROLL_REGION
+    return (
+        int(round(image.width * (region_left + region_width * 0.5))),
+        int(round(image.height * (region_top + region_height * 0.55))),
+    )
 
-    try:
-        ocr = read_rapidocr_items(image)
-    except Exception as exc:
-        return _result(
-            "click_item_by_ocr_text",
-            itemName=item_name,
-            found=False,
-            reason="rapidocr_error",
-            error=str(exc),
-            screenshotPath=path,
-        )
 
+def _ocr_visible_text_signature(items: List[Dict]) -> str:
+    texts = []
+    for item in items:
+        text = _normalize_ocr_match_text(item.get("text") or "")
+        if text:
+            texts.append(text)
+    return "|".join(texts)
+
+
+def _find_ocr_item_candidate(items: List[Dict], query: str) -> List[Dict]:
     candidates = []
-    for item in ocr.get("items", []):
+    for item in items:
         text = item.get("text") or ""
         normalized = _normalize_ocr_match_text(text)
         if query in normalized or normalized in query:
@@ -2643,29 +4026,94 @@ def click_item_by_ocr_text(item_name: str, background: bool = False) -> Dict:
             if x is None or y is None:
                 continue
             candidates.append({"text": text, "x": x, "y": y, "score": item.get("score"), "box": box})
+    return candidates
 
-    if not candidates:
-        return _result(
-            "click_item_by_ocr_text",
-            itemName=item_name,
-            found=False,
-            reason="ocr_text_not_found",
-            ocrTexts=[item.get("text") for item in ocr.get("items", [])],
-            screenshotPath=path,
+
+def click_item_by_ocr_text(
+    item_name: str,
+    background: bool = False,
+    max_scrolls: int = 8,
+    scroll_delta: int = -780,
+) -> Dict:
+    path = take_screenshot(WINDOW_TITLE)
+    image = _load_screenshot(path)
+    query = _normalize_ocr_match_text(item_name)
+    if not query:
+        return _result("click_item_by_ocr_text", itemName=item_name, found=False, reason="empty_query", screenshotPath=path)
+
+    attempts = []
+    seen_signatures = set()
+    last_path = path
+    last_ocr_texts = []
+
+    for attempt in range(max_scrolls + 1):
+        try:
+            ocr = read_rapidocr_items(image)
+        except Exception as exc:
+            return _result(
+                "click_item_by_ocr_text",
+                itemName=item_name,
+                found=False,
+                reason="rapidocr_error",
+                error=str(exc),
+                attempts=attempts,
+                screenshotPath=last_path,
+            )
+
+        items = ocr.get("items", [])
+        last_ocr_texts = [item.get("text") for item in items]
+        signature = _ocr_visible_text_signature(items)
+        candidates = _find_ocr_item_candidate(items, query)
+        attempts.append(
+            {
+                "attempt": attempt,
+                "screenshotPath": last_path,
+                "candidateCount": len(candidates),
+                "ocrTexts": last_ocr_texts,
+            }
         )
 
-    target = max(candidates, key=lambda item: item.get("score") or 0)
-    clicked = click(int(target["x"]), int(target["y"]), WINDOW_TITLE, background=background)
-    time.sleep(0.3)
-    after_path = take_screenshot(WINDOW_TITLE)
+        if candidates:
+            target = max(candidates, key=lambda item: item.get("score") or 0)
+            clicked = click(int(target["x"]), int(target["y"]), WINDOW_TITLE, background=background)
+            time.sleep(0.3)
+            after_path = take_screenshot(WINDOW_TITLE)
+            return _result(
+                "click_item_by_ocr_text",
+                itemName=item_name,
+                found=True,
+                clicked=clicked,
+                target=target,
+                attempts=attempts,
+                screenshotPath=last_path,
+                afterScreenshotPath=after_path,
+            )
+
+        if attempt >= max_scrolls:
+            break
+        if signature and signature in seen_signatures:
+            attempts[-1]["bottomDetected"] = True
+            break
+        if signature:
+            seen_signatures.add(signature)
+
+        scroll_x, scroll_y = _production_item_list_scroll_point(image)
+        scrolled = scroll(scroll_x, scroll_y, WINDOW_TITLE, wheel_delta=scroll_delta, background=background)
+        attempts[-1]["scroll"] = {"x": scroll_x, "y": scroll_y, "wheelDelta": scroll_delta, "success": scrolled}
+        if not scrolled:
+            break
+        time.sleep(0.45)
+        last_path = take_screenshot(WINDOW_TITLE)
+        image = _load_screenshot(last_path)
+
     return _result(
         "click_item_by_ocr_text",
         itemName=item_name,
-        found=True,
-        clicked=clicked,
-        target=target,
-        screenshotPath=path,
-        afterScreenshotPath=after_path,
+        found=False,
+        reason="ocr_text_not_found_after_scroll",
+        attempts=attempts,
+        ocrTexts=last_ocr_texts,
+        screenshotPath=last_path,
     )
 
 
@@ -2676,6 +4124,7 @@ def produce_station_item(
     dry_run: bool = False,
     ensure_window: bool = True,
     profit_guard: bool = True,
+    economic_overrides: Optional[Dict] = None,
 ) -> Dict:
     steps = []
 
@@ -2704,6 +4153,8 @@ def produce_station_item(
         )
 
     evaluation = evaluate_production_item(station_name, item_name)
+    if economic_overrides:
+        evaluation = _merge_runtime_economics(evaluation, economic_overrides)
     steps.append(evaluation)
     if evaluation.get("configuredStation") and not evaluation.get("stationMatches"):
         return _result(
@@ -2823,29 +4274,21 @@ def produce_station_item(
             screenshotPath=idle_click.get("screenshotPath"),
         )
 
-    item_click = click_button(item_name, background=background)
-    item_click["action"] = "select_station_item"
+    item_click = click_item_by_ocr_text(item_name, background=background)
+    item_click["action"] = "select_station_item_by_ocr"
     item_click["station"] = station_name
-    item_click["itemName"] = item_name
     steps.append(item_click)
     if not item_click.get("clicked"):
-        ocr_item_click = click_item_by_ocr_text(item_name, background=background)
-        ocr_item_click["action"] = "select_station_item_by_ocr"
-        ocr_item_click["station"] = station_name
-        steps.append(ocr_item_click)
-        if ocr_item_click.get("clicked"):
-            item_click = ocr_item_click
-        else:
-            final_path = take_screenshot(WINDOW_TITLE)
-            return _result(
-                "produce_station_item",
-                success=False,
-                reason="item_not_selected",
-                station=station_name,
-                itemName=item_name,
-                steps=steps,
-                screenshotPath=final_path,
-            )
+        final_path = take_screenshot(WINDOW_TITLE)
+        return _result(
+            "produce_station_item",
+            success=False,
+            reason="item_not_selected",
+            station=station_name,
+            itemName=item_name,
+            steps=steps,
+            screenshotPath=final_path,
+        )
     if not item_click.get("clicked"):
         final_path = take_screenshot(WINDOW_TITLE)
         return _result(
@@ -2943,7 +4386,7 @@ def produce_station_item(
     if produce_click.get("clicked"):
         _record_station_production(production_report)
 
-    return _result(
+    summary = _result(
         "produce_station_item",
         success=bool(produce_click.get("clicked")),
         station=station_name,
@@ -2956,13 +4399,16 @@ def produce_station_item(
         steps=steps,
         screenshotPath=final_path,
     )
+    record_production(summary)
+    return summary
 
 
 def produce_station_items(
-    item_specs: Dict[str, str],
+    item_specs: Dict[str, Union[str, List[str]]],
     background: bool = False,
     dry_run: bool = False,
     profit_guard: bool = True,
+    economic_overrides: Optional[Dict[str, Dict]] = None,
 ) -> Dict:
     steps = []
     produced = []
@@ -3013,18 +4459,36 @@ def produce_station_items(
     steps.append(dismiss_possible_reward_overlay())
 
     for station in STATIONS:
-        item_name = item_specs.get(station)
-        if not item_name:
+        item_spec = item_specs.get(station)
+        if not item_spec:
+            continue
+        item_names = item_spec if isinstance(item_spec, list) else [item_spec]
+        item_names = [str(name).strip() for name in item_names if str(name).strip()]
+        if not item_names:
             continue
 
-        result = produce_station_item(
-            station,
-            item_name,
-            background=background,
-            dry_run=dry_run,
-            ensure_window=False,
-            profit_guard=profit_guard,
-        )
+        result = None
+        candidate_results = []
+        for index, item_name in enumerate(item_names):
+            result = produce_station_item(
+                station,
+                item_name,
+                background=background,
+                dry_run=dry_run,
+                ensure_window=False,
+                profit_guard=profit_guard,
+                economic_overrides=(economic_overrides or {}).get(station),
+            )
+            result["candidateIndex"] = index
+            result["candidateItemName"] = item_name
+            candidate_results.append(result)
+            if result.get("reason") == "item_not_selected" and index < len(item_names) - 1:
+                continue
+            break
+        if result is None:
+            continue
+        if len(candidate_results) > 1:
+            result["candidateAttempts"] = candidate_results
         steps.append(result)
         if result.get("skipped"):
             skipped.append(station)

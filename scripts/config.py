@@ -67,6 +67,10 @@ def get_gui_agent_config() -> Dict[str, Any]:
     return load_config().get("gui_agent", {})
 
 
+def get_swat_product_config() -> Dict[str, Any]:
+    return load_config().get("swat_product", {})
+
+
 def set_gui_agent_config(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -83,4 +87,20 @@ def set_gui_agent_config(
         gui_config["model"] = model
     if provider is not None:
         gui_config["provider"] = provider
+    save_config(config)
+
+
+def set_swat_product_config(
+    cookie: Optional[str] = None,
+    version: Optional[str] = None,
+    swimlane: Optional[str] = None,
+) -> None:
+    config = load_config()
+    swat_config = config.setdefault("swat_product", {})
+    if cookie is not None:
+        swat_config["cookie"] = cookie
+    if version is not None:
+        swat_config["version"] = version
+    if swimlane is not None:
+        swat_config["swimlane"] = swimlane
     save_config(config)

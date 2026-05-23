@@ -1,0 +1,13 @@
+{
+  "gui_agent": {
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "gui-plus",
+    "provider": "aliyun",
+    "api_key": "YOUR_API_KEY"
+  },
+  "swat_product": {
+    "cookie": "YOUR_SWAT_PRODUCT_COOKIE",
+    "version": "YOUR_SWAT_PRODUCT_VERSION",
+    "swimlane": "YOUR_SWAT_PRODUCT_SWIMLANE"
+  }
+}

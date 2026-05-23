@@ -5,12 +5,16 @@ import sys
 import time
 from datetime import datetime
 
-from scripts.config import load_config, set_api_key, set_gui_agent_config
+from scripts.analytics_db import get_summary as get_analytics_summary
+from scripts.analytics_server import serve as serve_analytics
+from scripts.config import load_config, set_api_key, set_gui_agent_config, set_swat_product_config
 from scripts.games import delta_force
 from scripts.games import wegame_delta_force
 from scripts.keyboard import hold_key, press_key
+from scripts.maintenance import cleanup_old_logs
 from scripts.recognition import find_all_buttons, find_button, list_available_buttons
 from scripts.screenshot import take_desktop_screenshot, take_screenshot
+from scripts.swat_product_strategy import plan_best_swat_products
 from scripts.window import activate_window, get_window_info, list_windows
 
 
@@ -155,6 +159,77 @@ def handle_evaluate_production(args):
     print_json(delta_force.evaluate_production_item(args.station, args.item_name))
 
 
+def handle_plan_swat_products(args):
+    print_json(
+        plan_best_swat_products(
+            cookie=args.cookie,
+            version=args.version,
+            swimlane=args.swimlane,
+            metric=args.metric,
+        )
+    )
+
+
+def handle_produce_swat_products(args):
+    plan = plan_best_swat_products(
+        cookie=args.cookie,
+        version=args.version,
+        swimlane=args.swimlane,
+        metric=args.metric,
+    )
+    if not plan.get("success"):
+        print_json(
+            result(
+                "produce_swat_products",
+                metric=args.metric,
+                plan=plan,
+                execution=None,
+                success=False,
+                reason=plan.get("reason") or "swat_product_plan_failed",
+            )
+        )
+        return
+    if not plan.get("stationItemCandidates") and not plan.get("stationItems"):
+        print_json(
+            result(
+                "produce_swat_products",
+                metric=args.metric,
+                plan=plan,
+                execution=None,
+                success=False,
+                reason="swat_product_plan_empty",
+            )
+        )
+        return
+    economic_overrides = {
+        item["station"]: {
+            "unitExpectedRevenue": item.get("singlePrice"),
+            "outputQuantity": item.get("perCount"),
+            "expectedRevenue": (float(item.get("singlePrice") or 0) * int(item.get("perCount") or 1)),
+            "durationSeconds": item.get("productionSeconds"),
+            "source": "swat_product_api",
+        }
+        for item in plan.get("selected", [])
+        if item.get("station")
+    }
+    execution = delta_force.produce_station_items(
+        plan.get("stationItemCandidates") or plan.get("stationItems", {}),
+        background=args.background,
+        dry_run=args.dry_run,
+        profit_guard=args.profit_guard,
+        economic_overrides=economic_overrides,
+    )
+    print_json(
+        result(
+            "produce_swat_products",
+            metric=args.metric,
+            plan=plan,
+            execution=execution,
+            success=bool(plan.get("success") and execution.get("success")),
+        )
+    )
+
+
 def handle_read_metric(args):
     print_json(delta_force.read_screen_metric(args.reader_name))
 
@@ -183,12 +258,24 @@ def handle_read_market_detail(_args):
     print_json(delta_force.read_market_detail_state())
 
 
+def handle_read_market_sale_detail(_args):
+    print_json(delta_force.read_market_sale_detail_state())
+
+
+def handle_read_market_sale_overview(_args):
+    print_json(delta_force.read_market_sale_overview_state())
+
+
 def handle_set_market_quantity(args):
     print_json(delta_force.set_market_purchase_quantity(args.quantity, background=args.background))
 
 
 def handle_buy_market_item(args):
     print_json(delta_force.buy_market_item_quantity(args.item_name, args.quantity, background=args.background))
+
+
+def handle_sell_market_item(args):
+    print_json(delta_force.sell_market_item(args.item_name, background=args.background))
 
 
 def handle_redeem_department_item(args):
@@ -206,12 +293,52 @@ def handle_collect(args):
     print_json(delta_force.collect_completed_stations(background=args.background))
 
 
+def handle_read_inventory_visible(_args):
+    print_json(delta_force.read_inventory_visible())
+
+
+def handle_scan_inventory_stash(args):
+    print_json(delta_force.scan_inventory_stash(max_scrolls=args.max_scrolls, background=args.background))
+
+
+def handle_scan_inventory_all_boxes(args):
+    print_json(
+        delta_force.scan_inventory_all_boxes(
+            max_scrolls=args.max_scrolls,
+            background=args.background,
+            include_pages=args.include_pages,
+        )
+    )
+
+
+def handle_analytics_summary(args):
+    print_json(result("analytics_summary", **get_analytics_summary(limit=args.limit)))
+
+
+def handle_analytics_server(args):
+    print_json(result("analytics_server_starting", host=args.host, port=args.port))
+    serve_analytics(host=args.host, port=args.port)
+
+
+def handle_cleanup_artifacts(args):
+    print_json(
+        result(
+            "cleanup_artifacts",
+            logs=cleanup_old_logs(retention_hours=args.log_retention_hours),
+        )
+    )
+
+
 def handle_key(args):
     activate_window(WINDOW_TITLE)
     ok = press_key(args.key)
     time.sleep(0.3)
     path = take_screenshot(WINDOW_TITLE)
     print_json(result("key", key=args.key, success=ok, screenshotPath=path))
+
+
+def handle_enter_game_by_tab_prompt(_args):
+    print_json(delta_force.enter_game_by_tab_prompt())
 
 
 def handle_hold(args):
@@ -227,6 +354,15 @@ def handle_windows(_args):
 
 
 def handle_config(args):
+    if args.swat_cookie is not None or args.swat_version is not None or args.swat_swimlane is not None:
+        set_swat_product_config(
+            cookie=args.swat_cookie,
+            version=args.swat_version,
+            swimlane=args.swat_swimlane,
+        )
+        print_json(result("config", saved=True, section="swat_product"))
+        return
+
     if args.gui_base_url or args.gui_model or args.gui_provider:
         set_gui_agent_config(
             base_url=args.gui_base_url,
@@ -275,6 +411,82 @@ def handle_launch_direct(args):
     print_json(result("launch_direct", **wegame_delta_force.start_direct_client(wait_seconds=args.wait)))
 
 
+def handle_launch_game_from_wegame(args):
+    print_json(result("launch_game_from_wegame", **wegame_delta_force.launch_delta_from_wegame(wait_seconds=args.wait)))
+
+
+def handle_launch_and_enter_game(args):
+    launch = wegame_delta_force.launch_delta_from_wegame(wait_seconds=args.wait)
+    enter = None
+    if launch.get("success"):
+        enter = delta_force.enter_game_by_tab_prompt()
+    print_json(
+        result(
+            "launch_and_enter_game",
+            success=bool(launch.get("success") and enter and enter.get("success")),
+            launch=launch,
+            enter=enter,
+        )
+    )
+
+
+def handle_login_launch_and_enter_game(args):
+    steps = []
+    if get_window_info(WINDOW_TITLE):
+        enter = delta_force.enter_game_by_tab_prompt()
+        steps.append({"action": "enter_game_by_tab_prompt", **enter})
+        print_json(
+            result(
+                "login_launch_and_enter_game",
+                success=bool(enter.get("success")),
+                loginChannel=args.login_channel,
+                qrSent=False,
+                loggedIn=None,
+                launched=True,
+                enteredLobby=bool(enter.get("success")),
+                steps=steps,
+            )
+        )
+        return
+
+    logged_in = wegame_delta_force.wait_for_wegame_logged_in(wait_seconds=3)
+    steps.append({"action": "check_wegame_logged_in", **logged_in})
+    login = None
+    if not logged_in.get("success"):
+        login = wegame_delta_force.login_flow_ocr(
+            message=args.message,
+            project=args.project,
+            wait_seconds=args.qr_wait,
+            qr_refresh_seconds=args.qr_refresh_seconds,
+            login_channel=args.login_channel,
+        )
+        steps.append({"action": "login_flow_ocr", **login})
+        logged_in = wegame_delta_force.wait_for_wegame_logged_in(wait_seconds=args.scan_wait)
+        steps.append({"action": "wait_for_wegame_logged_in", **logged_in})
+
+    launch = None
+    enter = None
+    if logged_in.get("success"):
+        launch = wegame_delta_force.launch_delta_from_wegame(wait_seconds=args.launch_wait)
+        steps.append({"action": "launch_delta_from_wegame", **launch})
+        if launch.get("success"):
+            enter = delta_force.enter_game_by_tab_prompt()
+            steps.append({"action": "enter_game_by_tab_prompt", **enter})
+
+    print_json(
+        result(
+            "login_launch_and_enter_game",
+            success=bool(logged_in.get("success") and launch and launch.get("success") and enter and enter.get("success")),
+            loginChannel=args.login_channel,
+            qrSent=bool(login and login.get("qrSent")),
+            loggedIn=bool(logged_in.get("success")),
+            launched=bool(launch and launch.get("success")),
+            enteredLobby=bool(enter and enter.get("success")),
+            steps=steps,
+        )
+    )
+
+
 def handle_refresh_qr_send(args):
     print_json(
         result(
@@ -285,7 +497,25 @@ def handle_refresh_qr_send(args):
                 screen_x=args.x,
                 screen_y=args.y,
                 settle_ms=args.settle_ms,
+                login_channel=args.login_channel,
             ),
+        )
+    )
+
+
+def handle_login_flow_ocr(args):
+    login_result = wegame_delta_force.login_flow_ocr(
+        message=args.message,
+        project=args.project,
+        wait_seconds=args.wait,
+        qr_refresh_seconds=args.qr_refresh_seconds,
+        login_channel=args.login_channel,
+    )
+    login_result.pop("action", None)
+    print_json(
+        result(
+            "login_flow_ocr",
+            **login_result,
         )
     )
 
@@ -357,6 +587,21 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_production_parser.add_argument("station")
     evaluate_production_parser.add_argument("item_name")
 
+    plan_swat_products_parser = subparsers.add_parser("plan_swat_products")
+    plan_swat_products_parser.add_argument("--metric", default="hourlyProfit", choices=["hourlyProfit", "profit"])
+    plan_swat_products_parser.add_argument("--cookie")
+    plan_swat_products_parser.add_argument("--version")
+    plan_swat_products_parser.add_argument("--swimlane")
+
+    produce_swat_products_parser = subparsers.add_parser("produce_swat_products")
+    produce_swat_products_parser.add_argument("--metric", default="hourlyProfit", choices=["hourlyProfit", "profit"])
+    produce_swat_products_parser.add_argument("--cookie")
+    produce_swat_products_parser.add_argument("--version")
+    produce_swat_products_parser.add_argument("--swimlane")
+    produce_swat_products_parser.add_argument("--background", action="store_true")
+    produce_swat_products_parser.add_argument("--dry-run", action="store_true")
+    produce_swat_products_parser.add_argument("--profit-guard", action="store_true")
+
     read_metric_parser = subparsers.add_parser("read_metric")
     read_metric_parser.add_argument("reader_name")
 
@@ -377,6 +622,8 @@ def build_parser() -> argparse.ArgumentParser:
     click_market_item_parser.add_argument("--background", action="store_true")
 
     subparsers.add_parser("read_market_detail")
+    subparsers.add_parser("read_market_sale_detail")
+    subparsers.add_parser("read_market_sale_overview")
 
     set_market_quantity_parser = subparsers.add_parser("set_market_quantity")
     set_market_quantity_parser.add_argument("quantity", type=int)
@@ -387,6 +634,10 @@ def build_parser() -> argparse.ArgumentParser:
     buy_market_item_parser.add_argument("quantity", type=int)
     buy_market_item_parser.add_argument("--background", action="store_true")
 
+    sell_market_item_parser = subparsers.add_parser("sell_market_item")
+    sell_market_item_parser.add_argument("item_name")
+    sell_market_item_parser.add_argument("--background", action="store_true")
+
     redeem_department_item_parser = subparsers.add_parser("redeem_department_item")
     redeem_department_item_parser.add_argument("department_name")
     redeem_department_item_parser.add_argument("item_name")
@@ -395,6 +646,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     collect_parser = subparsers.add_parser("collect")
     collect_parser.add_argument("--background", action="store_true")
+
+    subparsers.add_parser("read_inventory_visible")
+
+    scan_inventory_parser = subparsers.add_parser("scan_inventory_stash")
+    scan_inventory_parser.add_argument("--max-scrolls", type=int, default=20)
+    scan_inventory_parser.add_argument("--background", action="store_true")
+
+    scan_inventory_all_parser = subparsers.add_parser("scan_inventory_all_boxes")
+    scan_inventory_all_parser.add_argument("--max-scrolls", type=int, default=0)
+    scan_inventory_all_parser.add_argument("--background", action="store_true")
+    scan_inventory_all_parser.add_argument("--include-pages", action="store_true")
+
+    analytics_summary_parser = subparsers.add_parser("analytics_summary")
+    analytics_summary_parser.add_argument("--limit", type=int, default=20)
+
+    analytics_server_parser = subparsers.add_parser("analytics_server")
+    analytics_server_parser.add_argument("--host", default="127.0.0.1")
+    analytics_server_parser.add_argument("--port", type=int, default=8765)
+
+    cleanup_parser = subparsers.add_parser("cleanup_artifacts")
+    cleanup_parser.add_argument("--log-retention-hours", type=int, default=24)
 
     key_parser = subparsers.add_parser("key")
     key_parser.add_argument("key")
@@ -411,6 +683,9 @@ def build_parser() -> argparse.ArgumentParser:
     config_parser.add_argument("--gui-base-url")
     config_parser.add_argument("--gui-model")
     config_parser.add_argument("--gui-provider")
+    config_parser.add_argument("--swat-cookie")
+    config_parser.add_argument("--swat-version")
+    config_parser.add_argument("--swat-swimlane")
     subparsers.add_parser("launch_status")
     subparsers.add_parser("launch_wegame")
 
@@ -418,9 +693,25 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("next_action")
     subparsers.add_parser("sync_overview_remaining_times")
     subparsers.add_parser("status")
+    subparsers.add_parser("enter_game_by_tab_prompt")
 
     launch_direct_parser = subparsers.add_parser("launch_direct")
     launch_direct_parser.add_argument("--wait", type=int, default=60)
+
+    launch_game_parser = subparsers.add_parser("launch_game_from_wegame")
+    launch_game_parser.add_argument("--wait", type=int, default=120)
+
+    launch_enter_parser = subparsers.add_parser("launch_and_enter_game")
+    launch_enter_parser.add_argument("--wait", type=int, default=120)
+
+    login_launch_enter_parser = subparsers.add_parser("login_launch_and_enter_game")
+    login_launch_enter_parser.add_argument("--message", default="WeGame 登录二维码")
+    login_launch_enter_parser.add_argument("--project", default="delta-force-skill-minimal_deaac76e")
+    login_launch_enter_parser.add_argument("--login-channel", choices=["qq", "wechat"], default="qq")
+    login_launch_enter_parser.add_argument("--qr-wait", type=int, default=60)
+    login_launch_enter_parser.add_argument("--scan-wait", type=int, default=180)
+    login_launch_enter_parser.add_argument("--launch-wait", type=int, default=120)
+    login_launch_enter_parser.add_argument("--qr-refresh-seconds", type=int, default=60)
 
     refresh_qr_send_parser = subparsers.add_parser("refresh_qr_send")
     refresh_qr_send_parser.add_argument("--message", default="WeGame 二维码刷新后截图")
@@ -428,6 +719,14 @@ def build_parser() -> argparse.ArgumentParser:
     refresh_qr_send_parser.add_argument("--x", type=int, default=2629)
     refresh_qr_send_parser.add_argument("--y", type=int, default=1430)
     refresh_qr_send_parser.add_argument("--settle-ms", type=int, default=900)
+    refresh_qr_send_parser.add_argument("--login-channel", choices=["qq", "wechat"], default="qq")
+
+    login_flow_ocr_parser = subparsers.add_parser("login_flow_ocr")
+    login_flow_ocr_parser.add_argument("--message", default="WeGame 登录二维码")
+    login_flow_ocr_parser.add_argument("--project", default="delta-force-skill-minimal_deaac76e")
+    login_flow_ocr_parser.add_argument("--wait", type=int, default=60)
+    login_flow_ocr_parser.add_argument("--qr-refresh-seconds", type=int, default=60)
+    login_flow_ocr_parser.add_argument("--login-channel", choices=["qq", "wechat"], default="qq")
 
     return parser
 
@@ -458,6 +757,8 @@ def main() -> None:
         "produce_station_item": handle_produce_station_item,
         "produce_station_items": handle_produce_station_items,
         "evaluate_production": handle_evaluate_production,
+        "plan_swat_products": handle_plan_swat_products,
+        "produce_swat_products": handle_produce_swat_products,
         "read_metric": handle_read_metric,
         "find_fill_confirm": handle_find_fill_confirm,
         "click_fill_confirm": handle_click_fill_confirm,
@@ -465,10 +766,19 @@ def main() -> None:
         "find_market_item": handle_find_market_item,
         "click_market_item": handle_click_market_item,
         "read_market_detail": handle_read_market_detail,
+        "read_market_sale_detail": handle_read_market_sale_detail,
+        "read_market_sale_overview": handle_read_market_sale_overview,
         "set_market_quantity": handle_set_market_quantity,
         "buy_market_item": handle_buy_market_item,
+        "sell_market_item": handle_sell_market_item,
         "redeem_department_item": handle_redeem_department_item,
         "collect": handle_collect,
+        "read_inventory_visible": handle_read_inventory_visible,
+        "scan_inventory_stash": handle_scan_inventory_stash,
+        "scan_inventory_all_boxes": handle_scan_inventory_all_boxes,
+        "analytics_summary": handle_analytics_summary,
+        "analytics_server": handle_analytics_server,
+        "cleanup_artifacts": handle_cleanup_artifacts,
         "key": handle_key,
         "hold": handle_hold,
         "windows": handle_windows,
@@ -476,11 +786,16 @@ def main() -> None:
         "launch_status": handle_launch_status,
         "launch_wegame": handle_launch_wegame,
         "launch_direct": handle_launch_direct,
+        "launch_game_from_wegame": handle_launch_game_from_wegame,
+        "launch_and_enter_game": handle_launch_and_enter_game,
+        "login_launch_and_enter_game": handle_login_launch_and_enter_game,
         "safe_for_automation": handle_safe_check,
         "next_action": handle_next_action,
         "sync_overview_remaining_times": handle_sync_overview_remaining_times,
         "status": handle_status,
+        "enter_game_by_tab_prompt": handle_enter_game_by_tab_prompt,
         "refresh_qr_send": handle_refresh_qr_send,
+        "login_flow_ocr": handle_login_flow_ocr,
     }
     handler = handlers.get(args.command)
     if not handler:

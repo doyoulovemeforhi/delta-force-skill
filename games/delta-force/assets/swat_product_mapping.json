@@ -1,0 +1,36 @@
+{
+  "placeToStation": {
+    "tech": "tech_center",
+    "bullet": "workbench",
+    "workbench": "workbench",
+    "pharmacy": "pharmacy_station",
+    "armory": "armor_bench"
+  },
+  "items": [
+    {
+      "station": "tech_center",
+      "localItemName": "svd",
+      "remoteAliases": ["SVD狙击步枪", "SVD"]
+    },
+    {
+      "station": "workbench",
+      "localItemName": "762x51mm M62",
+      "remoteAliases": ["7.62x51mm M62", "762x51mm M62"]
+    },
+    {
+      "station": "workbench",
+      "localItemName": "4.6x30mm",
+      "remoteAliases": ["4.6x30mm", "4.6x30mm AP6.3", "4.6x30mm AP SX"]
+    },
+    {
+      "station": "pharmacy_station",
+      "localItemName": "精密护甲维修包",
+      "remoteAliases": ["精密护甲维修包"]
+    },
+    {
+      "station": "armor_bench",
+      "localItemName": "精英防弹背心",
+      "remoteAliases": ["精英防弹背心"]
+    }
+  ]
+}

@@ -61,6 +61,7 @@ MOUSEEVENTF_ABSOLUTE = 0x8000
 MOUSEEVENTF_VIRTUALDESK = 0x4000
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_WHEEL = 0x0800
 
 
 def get_physical_screen_size() -> Tuple[int, int]:
@@ -80,6 +81,14 @@ def _send_mouse(flags: int, x: int = 0, y: int = 0) -> None:
     inputs[0].mi.dx = x
     inputs[0].mi.dy = y
     inputs[0].mi.dwFlags = flags
+    user32.SendInput(1, ctypes.byref(inputs), ctypes.sizeof(INPUT))
+
+
+def _send_mouse_wheel(delta: int) -> None:
+    inputs = (INPUT * 1)()
+    inputs[0].type = INPUT_MOUSE
+    inputs[0].mi.mouseData = delta
+    inputs[0].mi.dwFlags = MOUSEEVENTF_WHEEL
     user32.SendInput(1, ctypes.byref(inputs), ctypes.sizeof(INPUT))
 
 
@@ -250,6 +259,43 @@ def click(x: int, y: int, window_title: str, background: bool = False) -> bool:
     else:
         time.sleep(0.05 + random.random() * 0.03)
         return click_foreground_sendinput(screen_x, screen_y)
+
+
+def scroll(x: int, y: int, window_title: str, wheel_delta: int = -720, background: bool = False) -> bool:
+    """Scroll at a client coordinate. Negative delta scrolls down."""
+    hwnd = get_window_handle(window_title)
+    if not hwnd:
+        print(f'[scroll] Window not found: "{window_title}"')
+        return False
+
+    if not background:
+        activate_window(hwnd)
+
+    rect = wait_for_clickable_rect(hwnd)
+    if not rect:
+        print("[scroll] Could not resolve window client rect")
+        return False
+
+    left, top, right, bottom = rect
+    width = right - left
+    height = bottom - top
+    if x < 0 or y < 0 or x >= width or y >= height:
+        print(f"[scroll] Coordinate out of bounds: ({x}, {y}) for {width}x{height}")
+        return False
+
+    if background:
+        try:
+            lparam = _make_lparam(x, y)
+            win32gui.PostMessage(hwnd, win32con.WM_ACTIVATE, 1, 0)
+            win32gui.PostMessage(hwnd, win32con.WM_MOUSEWHEEL, wheel_delta << 16, lparam)
+            return True
+        except Exception:
+            return False
+
+    _move_mouse(left + x, top + y)
+    time.sleep(0.04 + random.random() * 0.02)
+    _send_mouse_wheel(wheel_delta)
+    return True
 
 
 def right_click(x: int, y: int, window_title: Optional[str] = None, background: bool = False) -> bool:

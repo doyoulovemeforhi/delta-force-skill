@@ -4,6 +4,16 @@
   [int]$QuickRetrySeconds = 90,
   [int]$QuickRetryLimit = 2,
   [int]$BufferMinutes = 2,
+  [ValidateSet("fixed", "profit")]
+  [string]$ProductionMode = "fixed",
+  [string[]]$FixedSpecs = @(
+    "tech_center=AUG突击步枪",
+    "workbench=5.45x39mm BS",
+    "pharmacy_station=精密护甲维修包",
+    "armor_bench=重型突击背心"
+  ),
+  [ValidateSet("hourlyProfit", "profit")]
+  [string]$SwatMetric = "hourlyProfit",
   [switch]$AllowUnprofitable,
   [switch]$NotifyOnSuccess,
   [string[]]$NotifyProviders = @()
@@ -57,11 +67,14 @@ function Get-ItemDisplayName {
   param($Station, $ItemName, $DisplayName)
   $raw = if ($DisplayName) { [string]$DisplayName } elseif ($ItemName) { [string]$ItemName } else { "" }
   if ($raw -match "4\\.6x30mm|4\\.6") { return "4.6x30mm" }
+  if ($raw -match "5\\.45x39mm\\s*BS") { return "5.45x39mm BS" }
   if ($raw -match "762x51mm|M62") { return "7.62x51mm M62" }
+  if ($raw -match "AUG") { return "AUG突击步枪" }
+  if ($raw -match "重型突击背心") { return "重型突击背心" }
   switch ([string]$Station) {
-    "tech_center" { return "SVD狙击步枪" }
+    "tech_center" { return "AUG突击步枪" }
     "pharmacy_station" { return "精密护甲维修包" }
-    "armor_bench" { return "精英防弹背心" }
+    "armor_bench" { return "重型突击背心" }
     default {
       if ($raw) { return $raw }
       return "未知物品"
@@ -177,6 +190,68 @@ function Format-SyncedTimes {
   return ($lines -join "`n")
 }
 
+function Get-ProduceCommandArgs {
+  if ($ProductionMode -eq "profit") {
+    return @(
+      "main.py",
+      "produce_swat_products",
+      "--metric",
+      $SwatMetric
+    )
+  }
+
+  return @(
+    "main.py",
+    "produce_station_items"
+  ) + @($FixedSpecs | Where-Object { $_ })
+}
+
+function Get-ProduceSummary {
+  param($ProduceJson)
+  if (-not $ProduceJson) {
+    return [pscustomobject]@{
+      produced = @()
+      productionReports = @()
+      skipped = @()
+      skippedReasons = $null
+      planSummary = $null
+      mode = $ProductionMode
+    }
+  }
+
+  if ($ProduceJson.action -eq "produce_swat_products" -and $ProduceJson.execution) {
+    $planSummary = $null
+    if ($ProduceJson.plan -and $ProduceJson.plan.selected) {
+      $planLines = @()
+      foreach ($item in @($ProduceJson.plan.selected)) {
+        $station = Get-StationDisplayName $item.station
+        $name = if ($item.remoteItemName) { [string]$item.remoteItemName } else { Get-ItemDisplayName $item.station $item.localItemName $item.localItemName }
+        $metricValue = Format-NumberOrUnknown $item.metricValue
+        $metricLabel = if ($ProduceJson.metric -eq "profit") { "总利润" } else { "小时利润" }
+        $planLines += "$station：$name（$metricLabel $metricValue）"
+      }
+      $planSummary = $planLines -join "`n"
+    }
+    return [pscustomobject]@{
+      produced = if ($ProduceJson.execution.produced) { @($ProduceJson.execution.produced) } else { @() }
+      productionReports = if ($ProduceJson.execution.productionReports) { @($ProduceJson.execution.productionReports) } else { @() }
+      skipped = if ($ProduceJson.execution.skipped) { @($ProduceJson.execution.skipped) } else { @() }
+      skippedReasons = if ($ProduceJson.execution.skippedReasons) { $ProduceJson.execution.skippedReasons } else { $null }
+      planSummary = $planSummary
+      mode = "profit"
+    }
+  }
+
+  return [pscustomobject]@{
+    produced = if ($ProduceJson.produced) { @($ProduceJson.produced) } else { @() }
+    productionReports = if ($ProduceJson.productionReports) { @($ProduceJson.productionReports) } else { @() }
+    skipped = if ($ProduceJson.skipped) { @($ProduceJson.skipped) } else { @() }
+    skippedReasons = if ($ProduceJson.skippedReasons) { $ProduceJson.skippedReasons } else { $null }
+    planSummary = $null
+    mode = "fixed"
+  }
+}
+
 function Send-CcConnectMessage {
   param([string]$Message, [string]$LogPath)
   $cc = Resolve-CcConnectCommand
@@ -194,18 +269,13 @@ function Invoke-Round {
   $roundLog = Join-Path $LogDir "scheduled_collect_produce_$timestamp.log"
   "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] scheduled collect/produce started" | Tee-Object -FilePath $roundLog -Append
 
+  $cleanup = & python main.py cleanup_artifacts 2>&1
+  $cleanup | Tee-Object -FilePath $roundLog -Append | Out-Null
+
   $collect = & python main.py collect_completed 2>&1
   $collect | Tee-Object -FilePath $roundLog -Append | Out-Null
 
-  $produceArgs = @(
-    "main.py",
-    "produce_station_items",
-    "tech_center=svd",
-    "workbench=4.6x30mm",
-    "pharmacy_station=精密护甲维修包",
-    "armor_bench=精英防弹背心"
-  )
-  if ($AllowUnprofitable) { $produceArgs += "--allow-unprofitable" }
+  $produceArgs = Get-ProduceCommandArgs
   $produce = & python @produceArgs 2>&1
   $produce | Tee-Object -FilePath $roundLog -Append | Out-Null
 
@@ -218,18 +288,22 @@ function Invoke-Round {
   $collectJson = Convert-CommandOutputToJson $collect
   $produceJson = Convert-CommandOutputToJson $produce
   $syncJson = Convert-CommandOutputToJson $sync
+  $produceSummary = Get-ProduceSummary $produceJson
   $collected = if ($collectJson -and $collectJson.collected) { @($collectJson.collected) } else { @() }
-  $produced = if ($produceJson -and $produceJson.produced) { @($produceJson.produced) } else { @() }
+  $produced = @($produceSummary.produced)
   $collectSkipped = if ($collectJson -and $collectJson.skipped) { @($collectJson.skipped) } else { @() }
-  $produceSkipped = if ($produceJson -and $produceJson.skipped) { @($produceJson.skipped) } else { @() }
-  $productionReports = if ($produceJson -and $produceJson.productionReports) { @($produceJson.productionReports) } else { @() }
+  $produceSkipped = @($produceSummary.skipped)
+  $productionReports = @($produceSummary.productionReports)
   $syncUpdated = if ($syncJson -and $syncJson.updatedStations) { @($syncJson.updatedStations) } else { @() }
-  $produceReasons = if ($produceJson -and $produceJson.skippedReasons) { $produceJson.skippedReasons } else { $null }
+  $produceReasons = $produceSummary.skippedReasons
+  $modeText = if ($produceSummary.mode -eq "profit") { "利润最优模式" } else { "固定物品模式" }
+  $planBlock = if ($produceSummary.planSummary) { "利润计划：`n$($produceSummary.planSummary)`n`n" } else { "" }
 
   if ($NotifyOnSuccess) {
     $message = @"
 三角洲行动特勤处自动任务已执行一轮。
-收取：$(Format-ListOrNone @($collected | ForEach-Object { Get-StationDisplayName $_ }))
+$modeText
+$planBlock收取：$(Format-ListOrNone @($collected | ForEach-Object { Get-StationDisplayName $_ }))
 
 生产：
 $(Format-ProductionReports $productionReports)

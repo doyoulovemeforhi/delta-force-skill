@@ -1,7 +1,7 @@
 import ctypes
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -25,9 +25,12 @@ except Exception:
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SCREENSHOTS_DIR = ROOT_DIR / "screenshots"
+SCREENSHOT_RETENTION_HOURS = 24
+SCREENSHOT_CLEANUP_INTERVAL_SECONDS = 1800
 dwmapi = ctypes.windll.dwmapi
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
+_last_screenshot_cleanup_at: Optional[datetime] = None
 
 
 class RECT(ctypes.Structure):
@@ -55,6 +58,64 @@ def _safe_name(name: str) -> str:
 
 def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+
+
+def cleanup_old_screenshots(retention_hours: int = SCREENSHOT_RETENTION_HOURS) -> dict:
+    cutoff = datetime.now() - timedelta(hours=retention_hours)
+    deleted_files = 0
+    deleted_dirs = 0
+    if not SCREENSHOTS_DIR.exists():
+        return {"deletedFiles": 0, "deletedDirs": 0, "cutoff": cutoff.isoformat(timespec="seconds")}
+
+    for path in SCREENSHOTS_DIR.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            modified_at = datetime.fromtimestamp(path.stat().st_mtime)
+        except OSError:
+            continue
+        if modified_at >= cutoff:
+            continue
+        try:
+            path.unlink()
+            deleted_files += 1
+        except OSError:
+            continue
+
+    for path in sorted(SCREENSHOTS_DIR.rglob("*"), reverse=True):
+        if not path.is_dir():
+            continue
+        try:
+            next(path.iterdir())
+        except StopIteration:
+            try:
+                path.rmdir()
+                deleted_dirs += 1
+            except OSError:
+                continue
+        except OSError:
+            continue
+
+    return {
+        "deletedFiles": deleted_files,
+        "deletedDirs": deleted_dirs,
+        "cutoff": cutoff.isoformat(timespec="seconds"),
+    }
+
+
+def maybe_cleanup_old_screenshots(
+    retention_hours: int = SCREENSHOT_RETENTION_HOURS,
+    interval_seconds: int = SCREENSHOT_CLEANUP_INTERVAL_SECONDS,
+) -> dict:
+    global _last_screenshot_cleanup_at
+    now = datetime.now()
+    if _last_screenshot_cleanup_at and (now - _last_screenshot_cleanup_at).total_seconds() < interval_seconds:
+        return {"skipped": True, "lastCleanupAt": _last_screenshot_cleanup_at.isoformat(timespec="seconds")}
+    result = cleanup_old_screenshots(retention_hours=retention_hours)
+    _last_screenshot_cleanup_at = now
+    result["skipped"] = False
+    result["lastCleanupAt"] = now.isoformat(timespec="seconds")
+    return result
 
 
 def get_physical_screen_size() -> Tuple[int, int]:
@@ -289,6 +350,7 @@ def take_screenshot(window_title: str = "三角洲行动") -> Tuple[Optional[Ima
 
 def save_screenshot(image: Image.Image, subfolder: str = "misc") -> str:
     """Save screenshot to screenshots folder with timestamp."""
+    maybe_cleanup_old_screenshots()
     target_dir = SCREENSHOTS_DIR / _safe_name(subfolder)
     target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / f"screenshot_{_timestamp()}.png"

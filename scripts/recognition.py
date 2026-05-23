@@ -10,7 +10,7 @@ from PIL import Image
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = ROOT_DIR / "games"
-TEMPLATE_BASE_WIDTH = 1920
+TEMPLATE_BASE_WIDTH = 3840
 _button_configs: Dict[str, Dict] = {}
 
 
@@ -81,6 +81,17 @@ def load_template(game_id: str, button_name: str, scale: float = 1.0) -> Optiona
     return template
 
 
+def _get_template_scales(config: Dict, game_width: Optional[int]) -> List[float]:
+    base_scale = (game_width / TEMPLATE_BASE_WIDTH) if game_width else 1.0
+    multiplier = float(config.get("scale", 1.0))
+    center = max(0.05, base_scale * multiplier)
+    if config.get("scales"):
+        return [max(0.05, base_scale * float(item)) for item in config["scales"]]
+    if config.get("multi_scale", True):
+        return sorted({round(center * factor, 4) for factor in (0.9, 1.0, 1.1)})
+    return [center]
+
+
 def find_button(
     screenshot: Image.Image,
     game_id: str,
@@ -102,11 +113,6 @@ def find_button(
         Dict with x, y, width, height, confidence, or None if not found
     """
     config = _load_button_config(game_id).get(button_name, {})
-    scale = config.get("scale", game_width / TEMPLATE_BASE_WIDTH if game_width else 1.0)
-    template = load_template(game_id, button_name, scale)
-    if template is None:
-        return None
-
     source = pil_to_cv2(screenshot)
     height, width = source.shape[:2]
     threshold = config.get("threshold", threshold)
@@ -121,42 +127,58 @@ def find_button(
         source = source[y : y + h, x : x + w]
         offset_x, offset_y = x, y
 
+    best = None
     match_mode = config.get("match_mode")
-    if match_mode == "masked_text":
-        source_display = source
-        template_display = template
-        hsv = cv2.cvtColor(template_display, cv2.COLOR_BGR2HSV)
-        lower = np.array(config.get("mask_lower_hsv", [0, 0, 150]), dtype=np.uint8)
-        upper = np.array(config.get("mask_upper_hsv", [180, 90, 255]), dtype=np.uint8)
-        template_mask = cv2.inRange(hsv, lower, upper)
-        template_mask = cv2.dilate(template_mask, np.ones((3, 3), np.uint8), iterations=1)
-    elif use_3_channels:
-        source_display = source
-        template_display = template
-        template_mask = None
-    else:
-        source_display = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
-        template_display = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-        template_mask = None
+    for scale in _get_template_scales(config, game_width):
+        template = load_template(game_id, button_name, scale)
+        if template is None:
+            continue
+        if match_mode == "masked_text":
+            source_display = source
+            template_display = template
+            hsv = cv2.cvtColor(template_display, cv2.COLOR_BGR2HSV)
+            lower = np.array(config.get("mask_lower_hsv", [0, 0, 150]), dtype=np.uint8)
+            upper = np.array(config.get("mask_upper_hsv", [180, 90, 255]), dtype=np.uint8)
+            template_mask = cv2.inRange(hsv, lower, upper)
+            template_mask = cv2.dilate(template_mask, np.ones((3, 3), np.uint8), iterations=1)
+        elif use_3_channels:
+            source_display = source
+            template_display = template
+            template_mask = None
+        else:
+            source_display = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
+            template_display = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+            template_mask = None
 
-    if source_display.shape[0] < template_display.shape[0] or source_display.shape[1] < template_display.shape[1]:
+        if source_display.shape[0] < template_display.shape[0] or source_display.shape[1] < template_display.shape[1]:
+            continue
+
+        if match_mode == "masked_text":
+            result = cv2.matchTemplate(source_display, template_display, cv2.TM_CCORR_NORMED, mask=template_mask)
+        else:
+            result = cv2.matchTemplate(source_display, template_display, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        if best is None or max_val > best["confidence"]:
+            h, w = template_display.shape[:2]
+            best = {
+                "x": offset_x + max_loc[0] + w // 2,
+                "y": offset_y + max_loc[1] + h // 2,
+                "width": w,
+                "height": h,
+                "confidence": float(max_val),
+                "scale": scale,
+            }
+
+    if not best or best["confidence"] < threshold:
         return None
 
-    if match_mode == "masked_text":
-        result = cv2.matchTemplate(source_display, template_display, cv2.TM_CCORR_NORMED, mask=template_mask)
-    else:
-        result = cv2.matchTemplate(source_display, template_display, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, max_loc = cv2.minMaxLoc(result)
-    if max_val < threshold:
-        return None
-
-    h, w = template_display.shape[:2]
     return {
-        "x": offset_x + max_loc[0] + w // 2,
-        "y": offset_y + max_loc[1] + h // 2,
-        "width": w,
-        "height": h,
-        "confidence": round(float(max_val), 3),
+        "x": best["x"],
+        "y": best["y"],
+        "width": best["width"],
+        "height": best["height"],
+        "confidence": round(float(best["confidence"]), 3),
+        "scale": round(float(best["scale"]), 4),
     }
 
 
@@ -204,14 +226,24 @@ def find_all_template_matches(
         List of dicts with x, y, width, height, confidence
     """
     config = _load_button_config(game_id).get(button_name, {})
-    scale = config.get("scale", game_width / TEMPLATE_BASE_WIDTH if game_width else 1.0)
-    template = load_template(game_id, button_name, scale)
+    threshold = config.get("threshold", threshold)
+    single = find_button(screenshot, game_id, button_name, threshold=threshold, game_width=game_width)
+    scale = single.get("scale") if single else None
+    template = load_template(game_id, button_name, scale or 1.0)
     if template is None:
         return []
 
     source = pil_to_cv2(screenshot)
     height, width = source.shape[:2]
     use_3_channels = config.get("use_3_channels", False)
+    roi = _get_roi(config, width, height)
+    offset_x = offset_y = 0
+    if roi:
+        x, y, w, h = roi
+        if x < 0 or y < 0 or x + w > width or y + h > height:
+            return []
+        source = source[y : y + h, x : x + w]
+        offset_x, offset_y = x, y
 
     if use_3_channels:
         source_gray = source
@@ -243,11 +275,12 @@ def find_all_template_matches(
         mask[y1:y2, x1:x2] = 0
         
         matches.append({
-            "x": max_loc[0] + tw // 2,
-            "y": max_loc[1] + th // 2,
+            "x": offset_x + max_loc[0] + tw // 2,
+            "y": offset_y + max_loc[1] + th // 2,
             "width": tw,
             "height": th,
             "confidence": round(float(max_val), 3),
+            "scale": round(float(scale or 1.0), 4),
         })
     
     return matches
